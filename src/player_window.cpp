@@ -18,12 +18,13 @@
 
 namespace velin {
 namespace {
-// Design tokens. Opaque surfaces layer upward from the window base; the
-// translucent tokens (hover, pressed, hairline, track) composite over
-// whichever surface sits beneath them, so one value works everywhere.
+// Design tokens, modelled on IINA's macOS HUD look: neutral graphite
+// surfaces, translucent heads-up panels floating over the video, white
+// glyphs and a single system-blue accent. Translucent tokens composite over
+// whatever sits beneath them, so one value works on video and on panels.
 struct Palette {
-    D2D1_COLOR_F base, stage, surface, raised, elevated;
-    D2D1_COLOR_F hover, pressed, hairline, track;
+    D2D1_COLOR_F base, video, hud, hudEdge, panel;
+    D2D1_COLOR_F hover, pressed, hairline, track, level, knob;
     D2D1_COLOR_F text, secondary, tertiary;
     D2D1_COLOR_F accent, accentHigh, accentLow, accentSoft, onAccent;
     D2D1_COLOR_F positive, danger;
@@ -31,22 +32,26 @@ struct Palette {
 D2D1_COLOR_F hex(unsigned value, float alpha = 1.f) { return D2D1::ColorF(value, alpha); }
 D2D1_COLOR_F fade(D2D1_COLOR_F color, float alpha) { color.a = alpha; return color; }
 const Palette darkTheme{
-    hex(0x0c0d11), hex(0x07080b), hex(0x14151b), hex(0x1c1d25), hex(0x2c2d38),
-    hex(0xffffff,.06f), hex(0xffffff,.1f), hex(0xffffff,.075f), hex(0xffffff,.14f),
-    hex(0xf3f2f8), hex(0xa7a9b6), hex(0x6e7180),
-    hex(0xb7a4ff), hex(0xcdbfff), hex(0x9a84f4), hex(0xb7a4ff,.14f), hex(0x14102a),
-    hex(0x7ed4a8), hex(0xff9e96)};
+    hex(0x1c1c1e), hex(0x000000), hex(0x242427,.86f), hex(0xffffff,.12f), hex(0xffffff,.04f),
+    hex(0xffffff,.1f), hex(0xffffff,.16f), hex(0xffffff,.08f), hex(0xffffff,.22f), hex(0xffffff,.92f), hex(0xffffff),
+    hex(0xf5f5f7), hex(0xa1a1a6), hex(0x6e6e73),
+    hex(0x0a84ff), hex(0x409cff), hex(0x0071e3), hex(0x0a84ff,.24f), hex(0xffffff),
+    hex(0x30d158), hex(0xff453a)};
 const Palette lightTheme{
-    hex(0xf3f3f6), hex(0xffffff), hex(0xffffff), hex(0xededf2), hex(0xffffff),
-    hex(0x000000,.05f), hex(0x000000,.08f), hex(0x000000,.09f), hex(0x000000,.12f),
-    hex(0x16171e), hex(0x5b5f6c), hex(0x8c909c),
-    hex(0x6a4ce0), hex(0x7e62f0), hex(0x5a3ccf), hex(0x6a4ce0,.1f), hex(0xffffff),
-    hex(0x2e7d52), hex(0xc2382f)};
+    hex(0xececec), hex(0x000000), hex(0xf6f6f6,.88f), hex(0x000000,.1f), hex(0x000000,.035f),
+    hex(0x000000,.06f), hex(0x000000,.1f), hex(0x000000,.08f), hex(0x000000,.14f), hex(0x1d1d1f,.85f), hex(0xffffff),
+    hex(0x1d1d1f), hex(0x6e6e73), hex(0xa1a1a6),
+    hex(0x007aff), hex(0x2a8cff), hex(0x0062cc), hex(0x007aff,.14f), hex(0xffffff),
+    hex(0x34c759), hex(0xff3b30)};
 Palette ui = darkTheme;
+bool lightAppearance = false;
 constexpr auto regular = DWRITE_FONT_WEIGHT_NORMAL;
 constexpr auto semibold = DWRITE_FONT_WEIGHT_SEMI_BOLD;
 constexpr auto centered = DWRITE_TEXT_ALIGNMENT_CENTER;
 constexpr auto trailing = DWRITE_TEXT_ALIGNMENT_TRAILING;
+constexpr float layerMargin = 18;  // Room around floating panels for their soft shadow.
+constexpr D2D1_RECT_F expand(D2D1_RECT_F r, float d) { return {r.left-d, r.top-d, r.right+d, r.bottom+d}; }
+
 constexpr auto rect(float x, float y, float w, float h) { return D2D1_RECT_F{x,y,x+w,y+h}; }
 template<class T> void release(T*& pointer) { if (pointer) { pointer->Release(); pointer = nullptr; } }
 
@@ -193,6 +198,7 @@ PlayerWindow::~PlayerWindow() {
     engine_.shutdown();
     for (auto& [key,format]:textFormats_) { (void)key; format->Release(); }
     discardTarget();
+    releaseLayers();
     release(roundStroke_);
     release(writeFactory_);
     release(factory_);
@@ -227,6 +233,12 @@ int PlayerWindow::run(int showCommand, const std::vector<std::string>& paths) {
     videoType.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     videoType.lpszClassName = L"Velin.Video";
     RegisterClassW(&videoType);
+    WNDCLASSW overlayType{};
+    overlayType.lpfnWndProc = overlayProc;
+    overlayType.hInstance = instance_;
+    overlayType.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    overlayType.lpszClassName = L"Velin.Overlay";
+    RegisterClassW(&overlayType);
     if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory_)) ||
         FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                   reinterpret_cast<IUnknown**>(&writeFactory_))))
@@ -306,7 +318,7 @@ int PlayerWindow::run(int showCommand, const std::vector<std::string>& paths) {
             keyDown(message.wParam,message.message==WM_KEYUP);
             continue;
         }
-        if (plugins_ && (message.hwnd==window_ || message.hwnd==video_)) {
+        if (plugins_ && (message.hwnd==window_ || message.hwnd==video_ || (isLayerWindow(message.hwnd) && IsWindowEnabled(window_)))) {
             const auto kind=message.message;
             const bool doubleClick=kind==WM_LBUTTONDBLCLK || kind==WM_RBUTTONDBLCLK || kind==WM_MBUTTONDBLCLK;
             const bool down=kind==WM_LBUTTONDOWN || kind==WM_RBUTTONDOWN || kind==WM_MBUTTONDOWN || doubleClick;
@@ -373,7 +385,8 @@ void PlayerWindow::createResources() {
     if (FAILED(factory_->CreateHwndRenderTarget(D2D1::RenderTargetProperties(),
         D2D1::HwndRenderTargetProperties(window_, D2D1::SizeU(bounds.right, bounds.bottom)), &target_))) return;
     target_->SetDpi(dpi_ * 96.f, dpi_ * 96.f);
-    if (FAILED(target_->CreateSolidColorBrush(ui.text, &brush_))) discardTarget();
+    if (FAILED(target_->CreateSolidColorBrush(ui.text, &brush_))) { discardTarget(); return; }
+    canvas_ = target_; paint_ = brush_;
     if (!roundStroke_) {
         const auto properties = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
             D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
@@ -381,45 +394,45 @@ void PlayerWindow::createResources() {
     }
 }
 
-void PlayerWindow::discardTarget() { release(brush_); release(target_); }
+void PlayerWindow::discardTarget() { release(brush_); release(target_); canvas_ = nullptr; paint_ = nullptr; }
 
 void PlayerWindow::fill(D2D1_RECT_F bounds, D2D1_COLOR_F color, float radius) {
-    brush_->SetColor(color);
-    if (radius > 0) target_->FillRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), brush_);
-    else target_->FillRectangle(bounds, brush_);
+    paint_->SetColor(color);
+    if (radius > 0) canvas_->FillRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), paint_);
+    else canvas_->FillRectangle(bounds, paint_);
 }
 
 void PlayerWindow::outline(D2D1_RECT_F bounds, D2D1_COLOR_F color, float radius, float width) {
     // Inset by half the stroke so hairlines sit inside the shape's edge.
     const float inset = width/2;
     const D2D1_RECT_F inner{bounds.left+inset, bounds.top+inset, bounds.right-inset, bounds.bottom-inset};
-    brush_->SetColor(color);
-    if (radius > 0) target_->DrawRoundedRectangle(D2D1::RoundedRect(inner, radius-inset, radius-inset), brush_, width);
-    else target_->DrawRectangle(inner, brush_, width);
+    paint_->SetColor(color);
+    if (radius > 0) canvas_->DrawRoundedRectangle(D2D1::RoundedRect(inner, radius-inset, radius-inset), paint_, width);
+    else canvas_->DrawRectangle(inner, paint_, width);
 }
 
 void PlayerWindow::gradient(D2D1_RECT_F bounds, D2D1_COLOR_F from, D2D1_COLOR_F to, float radius, bool horizontal) {
     const D2D1_GRADIENT_STOP stops[]{{0.f, from}, {1.f, to}};
     ID2D1GradientStopCollection* collection = nullptr;
-    ID2D1LinearGradientBrush* paint = nullptr;
+    ID2D1LinearGradientBrush* brush = nullptr;
     const auto properties = D2D1::LinearGradientBrushProperties(D2D1::Point2F(bounds.left, bounds.top),
         horizontal ? D2D1::Point2F(bounds.right, bounds.top) : D2D1::Point2F(bounds.left, bounds.bottom));
-    if (SUCCEEDED(target_->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &collection)) &&
-        SUCCEEDED(target_->CreateLinearGradientBrush(&properties, nullptr, collection, &paint))) {
-        if (radius > 0) target_->FillRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), paint);
-        else target_->FillRectangle(bounds, paint);
+    if (SUCCEEDED(canvas_->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &collection)) &&
+        SUCCEEDED(canvas_->CreateLinearGradientBrush(&properties, nullptr, collection, &brush))) {
+        if (radius > 0) canvas_->FillRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), brush);
+        else canvas_->FillRectangle(bounds, brush);
     } else fill(bounds, to, radius);
-    release(paint); release(collection);
+    release(brush); release(collection);
 }
 
 void PlayerWindow::circle(float cx, float cy, float radius, D2D1_COLOR_F color) {
-    brush_->SetColor(color);
-    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), brush_);
+    paint_->SetColor(color);
+    canvas_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), paint_);
 }
 
 void PlayerWindow::line(float x1, float y1, float x2, float y2, D2D1_COLOR_F color, float thickness) {
-    brush_->SetColor(color);
-    target_->DrawLine(D2D1::Point2F(x1,y1), D2D1::Point2F(x2,y2), brush_, thickness, roundStroke_);
+    paint_->SetColor(color);
+    canvas_->DrawLine(D2D1::Point2F(x1,y1), D2D1::Point2F(x2,y2), paint_, thickness, roundStroke_);
 }
 
 IDWriteTextFormat* PlayerWindow::textFormat(float size, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT alignment) {
@@ -466,8 +479,8 @@ void PlayerWindow::text(std::wstring_view value, D2D1_RECT_F bounds, float size,
                         D2D1_COLOR_F color, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT alignment) {
     auto* format = textFormat(size, weight, alignment);
     if (!format) return;
-    brush_->SetColor(color);
-    target_->DrawText(value.data(), static_cast<UINT32>(value.size()), format, bounds, brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    paint_->SetColor(color);
+    canvas_->DrawText(value.data(), static_cast<UINT32>(value.size()), format, bounds, paint_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
 void PlayerWindow::applyTheme() {
@@ -477,10 +490,10 @@ void PlayerWindow::applyTheme() {
         if (RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&value,&size)==ERROR_SUCCESS) light=value!=0;
     }
     ui=light?lightTheme:darkTheme;
+    lightAppearance=light;
     BOOL dark=!light; DwmSetWindowAttribute(window_,20,&dark,sizeof(dark));
-    // Blend the caption into the window base so the title bar reads as part of the canvas.
-    COLORREF caption=light?RGB(243,243,246):RGB(12,13,17); DwmSetWindowAttribute(window_,35,&caption,sizeof(caption));
-    COLORREF captionText=light?RGB(22,23,30):RGB(167,169,182); DwmSetWindowAttribute(window_,36,&captionText,sizeof(captionText));
+    COLORREF captionText=light?RGB(29,29,31):RGB(161,161,166); DwmSetWindowAttribute(window_,36,&captionText,sizeof(captionText));
+    captionColor_=CLR_INVALID;  // draw() picks the caption colour for the current content.
     InvalidateRect(window_,nullptr,FALSE);
 }
 
@@ -500,9 +513,9 @@ void PlayerWindow::icon(int action, D2D1_RECT_F bounds, D2D1_COLOR_F color) {
             for (++point; point != points.end(); ++point) sink->AddLine(at(point->x, point->y));
             sink->EndFigure(closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
             sink->Close(); sink->Release();
-            brush_->SetColor(color);
-            if (filled) target_->FillGeometry(geometry, brush_);
-            target_->DrawGeometry(geometry, brush_, width, roundStroke_);
+            paint_->SetColor(color);
+            if (filled) canvas_->FillGeometry(geometry, paint_);
+            canvas_->DrawGeometry(geometry, paint_, width, roundStroke_);
         }
         geometry->Release();
     };
@@ -516,22 +529,23 @@ void PlayerWindow::icon(int action, D2D1_RECT_F bounds, D2D1_COLOR_F color) {
             sink->AddArc(&segment);
             sink->EndFigure(D2D1_FIGURE_END_OPEN);
             sink->Close(); sink->Release();
-            brush_->SetColor(color);
-            target_->DrawGeometry(geometry, brush_, 1.6f, roundStroke_);
+            paint_->SetColor(color);
+            canvas_->DrawGeometry(geometry, paint_, 1.6f, roundStroke_);
         }
         geometry->Release();
     };
     const auto frame = [&](float x, float y, float w, float h, float radius) {
-        brush_->SetColor(color);
-        target_->DrawRoundedRectangle(D2D1::RoundedRect(rect(cx+x, cy+y, w, h), radius, radius), brush_, 1.6f);
+        paint_->SetColor(color);
+        canvas_->DrawRoundedRectangle(D2D1::RoundedRect(rect(cx+x, cy+y, w, h), radius, radius), paint_, 1.6f);
     };
-    const auto ring = [&](float x, float y, float radius) {
-        brush_->SetColor(color);
-        target_->DrawEllipse(D2D1::Ellipse(at(x, y), radius, radius), brush_, 1.6f);
+    const auto ring = [&](float x, float y, float rx, float ry) {
+        paint_->SetColor(color);
+        canvas_->DrawEllipse(D2D1::Ellipse(at(x, y), rx, ry), paint_, 1.6f);
     };
     switch(action) {
     case TogglePause: {
-        const float s = bounds.bottom-bounds.top >= 44 ? 1.15f : 1.f;
+        // The primary transport glyph is drawn larger, as in IINA's controller.
+        const float s = bounds.bottom-bounds.top >= 38 ? 1.3f : 1.f;
         if (!state.idle && !state.paused) {
             fill(rect(cx-5.6f*s, cy-7.5f*s, 3.8f*s, 15*s), color, 1.4f);
             fill(rect(cx+1.8f*s, cy-7.5f*s, 3.8f*s, 15*s), color, 1.4f);
@@ -539,10 +553,10 @@ void PlayerWindow::icon(int action, D2D1_RECT_F bounds, D2D1_COLOR_F color) {
         break;
     }
     case RecentItem: shape({{-2.5f,-4.5f},{5,0},{-2.5f,4.5f}}, true, true, 1.4f); break;
-    case Previous: stroke(-7,-7,-7,7,2.f); shape({{7,-6.5f},{7,6.5f},{-3,0}}, true, true); break;
-    case Next: stroke(7,-7,7,7,2.f); shape({{-7,-6.5f},{-7,6.5f},{3,0}}, true, true); break;
+    case Previous: stroke(-7,-7,-7,7,2.2f); shape({{7,-6.5f},{7,6.5f},{-3,0}}, true, true); break;
+    case Next: stroke(7,-7,7,7,2.2f); shape({{-7,-6.5f},{-7,6.5f},{3,0}}, true, true); break;
     case ToggleMute:
-        shape({{-9,-3.5f},{-5.5f,-3.5f},{-.5f,-8},{-.5f,8},{-5.5f,3.5f},{-9,3.5f}}, true, false);
+        shape({{-9,-3.5f},{-5.5f,-3.5f},{-.5f,-8},{-.5f,8},{-5.5f,3.5f},{-9,3.5f}}, true, true);
         if (state.muted || state.volume <= 0) { stroke(4,-3.5f,11,3.5f); stroke(4,3.5f,11,-3.5f); }
         else {
             arc(3.5f,-3.8f,3.5f,3.8f,5.4f);
@@ -571,18 +585,29 @@ void PlayerWindow::icon(int action, D2D1_RECT_F bounds, D2D1_COLOR_F color) {
     case Screenshot:
         frame(-10,-5.5f,20,14,3.5f);
         shape({{-4,-5.5f},{-2.5f,-8.5f},{2.5f,-8.5f},{4,-5.5f}}, false, false);
-        ring(0,1.5f,3.6f);
+        ring(0,1.5f,3.6f,3.6f);
         break;
     case SubtitleMenu:
         frame(-10.5f,-7.5f,21,15,3.5f);
         stroke(-6,-1,0,-1); stroke(3,-1,6,-1); stroke(-6,3,-3,3); stroke(0,3,6,3);
         break;
     case PreferencesAction:
-        stroke(-9,-5,-5.5f,-5); ring(-3,-5,2.5f); stroke(-.5f,-5,9,-5);
-        stroke(-9,5,1.5f,5); ring(4,5,2.5f); stroke(6.5f,5,9,5);
+        stroke(-9,-5,-5.5f,-5); ring(-3,-5,2.5f,2.5f); stroke(-.5f,-5,9,-5);
+        stroke(-9,5,1.5f,5); ring(4,5,2.5f,2.5f); stroke(6.5f,5,9,5);
+        break;
+    case PictureInPicture:
+        frame(-10,-7.5f,20,15,3);
+        fill(rect(cx+.5f,cy+.5f,7,4.5f),color,1.2f);
         break;
     case AddFiles: stroke(-6,0,6,0,1.8f); stroke(0,-6,0,6,1.8f); break;
-    case OpenFiles: case OpenFolder:
+    case OpenFiles:
+        shape({{-6,-9},{2,-9},{7,-4},{7,9},{-6,9}}, true, false);
+        shape({{2,-9},{2,-4},{7,-4}}, false, false);
+        break;
+    case OpenUrl:
+        ring(0,0,8.5f,8.5f); ring(0,0,3.6f,8.5f); stroke(-8.5f,0,8.5f,0);
+        break;
+    case OpenFolder:
         shape({{-10,-7},{-4,-7},{-2,-4.5f},{10,-4.5f},{10,7.5f},{-10,7.5f}}, true, false); break;
     default:
         for (int i=-1;i<=1;++i) circle(cx+static_cast<float>(i)*6,cy,1.6f,color);
@@ -594,47 +619,472 @@ void PlayerWindow::button(int action, D2D1_RECT_F bounds, std::wstring_view labe
                           std::wstring hint, bool primary, int data) {
     const bool hover = hovered_ == static_cast<int>(hits_.size());
     const float height = bounds.bottom-bounds.top, radius = height/2;
-    if (primary) {
-        gradient(bounds, hover ? ui.accentHigh : ui.accent, hover ? ui.accent : ui.accentLow, radius);
-        outline(bounds, D2D1::ColorF(1,1,1,.16f), radius);
-    } else {
+    if (primary) gradient(bounds, hover ? ui.accentHigh : ui.accent, hover ? ui.accent : ui.accentLow, radius);
+    else {
         fill(bounds, hover ? ui.pressed : ui.hover, radius);
         outline(bounds, ui.hairline, radius);
     }
-    text(label, bounds, height < 34 ? 12.f : 13.f, primary ? ui.onAccent : ui.text, semibold, centered);
+    text(label, bounds, height < 30 ? 12.f : 13.f, primary ? ui.onAccent : ui.text, semibold, centered);
     hits_.push_back({bounds,action,data,std::move(hint)});
 }
 
 void PlayerWindow::iconButton(int action, D2D1_RECT_F bounds, std::wstring hint, bool active) {
     const bool hover = hovered_ == static_cast<int>(hits_.size());
-    const float radius = std::min(10.f, (bounds.bottom-bounds.top)/2);
+    const float radius = (bounds.bottom-bounds.top)/2;
     if (active) fill(bounds, ui.accentSoft, radius);
     if (hover) fill(bounds, ui.hover, radius);
-    icon(action, bounds, active ? ui.accent : (hover ? ui.text : ui.secondary));
+    icon(action, bounds, active ? ui.accent : (hover ? ui.text : fade(ui.text, .86f)));
     hits_.push_back({bounds,action,0,std::move(hint)});
 }
 
-void PlayerWindow::playButton(D2D1_RECT_F bounds, std::wstring hint) {
-    const bool hover = hovered_ == static_cast<int>(hits_.size());
-    const float radius = (bounds.right-bounds.left)/2;
-    const float cx = (bounds.left+bounds.right)/2, cy = (bounds.top+bounds.bottom)/2;
-    // A soft halo lifts the primary control without a hard drop shadow.
-    circle(cx, cy, radius+6, fade(ui.accent, hover ? .16f : .07f));
-    gradient(bounds, hover ? ui.accentHigh : ui.accent, hover ? ui.accent : ui.accentLow, radius);
-    outline(bounds, D2D1::ColorF(1,1,1,.18f), radius);
-    icon(TogglePause, bounds, ui.onAccent);
-    hits_.push_back({bounds,TogglePause,0,std::move(hint)});
+void PlayerWindow::slider(int action, D2D1_RECT_F track, double fraction, std::wstring hint) {
+    // IINA-style bar: a thin track that thickens under the pointer, a bright
+    // level and a white knob.
+    const bool hot = hovered_ == static_cast<int>(hits_.size()) || dragAction_ == action;
+    const float cy = (track.top+track.bottom)/2, thickness = hot ? 5.f : 3.f;
+    const auto bar = rect(track.left, cy-thickness/2, track.right-track.left, thickness);
+    const float level = (bar.right-bar.left)*static_cast<float>(std::clamp(fraction, 0., 1.));
+    fill(bar, ui.track, thickness/2);
+    if (level > 0) fill(rect(bar.left, bar.top, std::max(level, thickness), thickness), ui.level, thickness/2);
+    const auto& state = engine_.state();
+    if (action == SeekBar && preferences_.showChapterMarkers && state.duration > 0) for (const auto& chapter : state.chapters) {
+        if (chapter.time > 0 && chapter.time < state.duration) {
+            const float x = bar.left+(bar.right-bar.left)*static_cast<float>(chapter.time/state.duration);
+            fill(rect(x-.75f, bar.top-1, 1.5f, thickness+2), fade(ui.hud, 1.f));
+        }
+    }
+    if (action != SeekBar || state.duration > 0) {
+        const float knob = hot ? 6.5f : 5.f;
+        circle(bar.left+level, cy+.5f, knob+1, D2D1::ColorF(0, 0, 0, .28f));
+        circle(bar.left+level, cy, knob, ui.knob);
+    }
+    hits_.push_back({rect(track.left-6, cy-10, track.right-track.left+12, 20), action, 0, std::move(hint)});
+}
+
+void PlayerWindow::hud(D2D1_RECT_F bounds, float radius, bool shadow) {
+    if (shadow) for (int ring = 1; ring <= 4; ++ring) {
+        // Soft falloff built from widening rings; the panel itself stays translucent.
+        const float spread = static_cast<float>(ring)*2;
+        outline(expand(bounds, spread), D2D1::ColorF(0, 0, 0, .11f-.025f*static_cast<float>(ring)), radius+spread, 2);
+    }
+    fill(bounds, ui.hud, radius);
+    outline(bounds, ui.hudEdge, radius);
 }
 
 float PlayerWindow::sidebarWidth() const { const float side=std::clamp(static_cast<float>(preferences_.sidebarWidth),240.f,640.f);return showPlaylist_ && width_>=side+sidebarThreshold?side:0.f; }
-D2D1_RECT_F PlayerWindow::sidebarRect() const {
-    return {width_-gutter-sidebarWidth()+sidebarGap,stageTop,width_-gutter,height_-dockHeight};
+bool PlayerWindow::chromeShown() const { return !uiHidden_ || engine_.state().idle; }
+bool PlayerWindow::sidebarShown() const {
+    return sidebarWidth()>0 && chromeShown() && !pip_ && (!fullscreen_ || engine_.state().idle);
 }
-D2D1_RECT_F PlayerWindow::videoRect() const {
-    if(uiHidden_ && !engine_.state().idle)return {0,0,width_,height_};
-    if (pip_) return {0,0,width_,height_-(controlsVisible_?52.f:0.f)};
-    if (fullscreen_ && !engine_.state().idle) return {0,0,width_,height_-(controlsVisible_?dockHeight:0.f)};
-    return {gutter,stageTop,width_-gutter-sidebarWidth(),height_-dockHeight};
+D2D1_RECT_F PlayerWindow::sidebarRect() const { return {width_-sidebarWidth(),0,width_,height_}; }
+D2D1_RECT_F PlayerWindow::videoRect() const { return {0,0,width_-(sidebarShown()?sidebarWidth():0.f),height_}; }
+D2D1_RECT_F PlayerWindow::controlRect() const {
+    // The controller floats centred over the video, clear of the sidebar.
+    const float right=width_-(sidebarShown()?sidebarWidth():0.f);
+    if (pip_) {
+        const float w=std::max(120.f,std::min(right-16,300.f));
+        return rect((right-w)/2,height_-54,w,44);
+    }
+    const float w=std::max(120.f,std::min({std::max(right-48,300.f),640.f,right-16}));
+    return rect((right-w)/2,height_-(fullscreen_?40.f:20.f)-84,w,84);
+}
+
+bool PlayerWindow::isLayerWindow(HWND window) const {
+    return window && std::any_of(layers_.begin(),layers_.end(),[window](const Layer& layer){return layer.window==window;});
+}
+
+bool PlayerWindow::pointerOverChrome() const {
+    POINT point{};
+    if (!GetCursorPos(&point)) return false;
+    const HWND under=WindowFromPoint(point);
+    return std::any_of(layers_.begin(),layers_.end(),[under](const Layer& layer){return layer.shown && layer.window==under;});
+}
+
+bool PlayerWindow::beginLayer(LayerId id, D2D1_RECT_F bounds) {
+    auto& layer=layers_[id];
+    if (!layer.window) {
+        // Notices and tooltips never take input; the other layers forward theirs.
+        const DWORD style=WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|(id==NoticeLayer || id==TooltipLayer?WS_EX_TRANSPARENT:0);
+        layer.window=CreateWindowExW(style,L"Velin.Overlay",L"",WS_POPUP,0,0,1,1,window_,nullptr,instance_,this);
+        if (!layer.window) return false;
+    }
+    const int left=static_cast<int>(std::floor(bounds.left*dpi_)), top=static_cast<int>(std::floor(bounds.top*dpi_));
+    const int width=std::max(1,static_cast<int>(std::ceil(bounds.right*dpi_))-left);
+    const int height=std::max(1,static_cast<int>(std::ceil(bounds.bottom*dpi_))-top);
+    if (!layer.dc) {
+        HDC screen=GetDC(nullptr); layer.dc=CreateCompatibleDC(screen); ReleaseDC(nullptr,screen);
+        if (!layer.dc) return false;
+    }
+    if (!layer.bitmap || width!=layer.width || height!=layer.height) {
+        if (layer.bitmap) { SelectObject(layer.dc,layer.previous); DeleteObject(layer.bitmap); layer.bitmap=nullptr; }
+        BITMAPINFO info{};
+        info.bmiHeader.biSize=sizeof(info.bmiHeader); info.bmiHeader.biWidth=width; info.bmiHeader.biHeight=-height;
+        info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32; info.bmiHeader.biCompression=BI_RGB;
+        void* bits=nullptr;
+        layer.bitmap=CreateDIBSection(layer.dc,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+        if (!layer.bitmap) return false;
+        layer.previous=SelectObject(layer.dc,layer.bitmap);
+        layer.width=width; layer.height=height;
+    }
+    if (layer.target && layer.dpi!=dpi_) { release(layer.brush); release(layer.target); }
+    if (!layer.target) {
+        const auto properties=D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),96.f*dpi_,96.f*dpi_);
+        if (FAILED(factory_->CreateDCRenderTarget(&properties,&layer.target))) return false;
+        if (FAILED(layer.target->CreateSolidColorBrush(ui.text,&layer.brush))) { release(layer.target); return false; }
+        // ClearType needs an opaque backdrop; translucent layers use greyscale text.
+        layer.target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        layer.dpi=dpi_;
+    }
+    const RECT area{0,0,width,height};
+    if (FAILED(layer.target->BindDC(layer.dc,&area))) return false;
+    layer.left=left; layer.top=top;
+    canvas_=layer.target; paint_=layer.brush;
+    layer.target->BeginDraw();
+    layer.target->Clear(D2D1::ColorF(0,0,0,0));
+    // Draw in client coordinates; the transform maps them into this layer.
+    layer.target->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(left)/dpi_,-static_cast<float>(top)/dpi_));
+    return true;
+}
+
+void PlayerWindow::endLayer(LayerId id) {
+    auto& layer=layers_[id];
+    const HRESULT result=layer.target->EndDraw();
+    canvas_=target_; paint_=brush_;
+    if (FAILED(result)) {
+        if (result==D2DERR_RECREATE_TARGET) { release(layer.brush); release(layer.target); }
+        return;
+    }
+    POINT origin{layer.left,layer.top}; ClientToScreen(window_,&origin);
+    SIZE size{layer.width,layer.height};
+    POINT source{0,0};
+    BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+    UpdateLayeredWindow(layer.window,nullptr,&origin,&size,layer.dc,&source,0,&blend,ULW_ALPHA);
+    if (!layer.shown) { ShowWindow(layer.window,SW_SHOWNOACTIVATE); layer.shown=true; }
+}
+
+void PlayerWindow::hideLayer(LayerId id) {
+    auto& layer=layers_[id];
+    if (layer.shown) { ShowWindow(layer.window,SW_HIDE); layer.shown=false; }
+}
+
+void PlayerWindow::moveLayers() {
+    for (auto& layer:layers_) {
+        if (!layer.shown) continue;
+        POINT origin{layer.left,layer.top}; ClientToScreen(window_,&origin);
+        SetWindowPos(layer.window,nullptr,origin.x,origin.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    }
+}
+
+void PlayerWindow::releaseLayers() {
+    for (auto& layer:layers_) {
+        release(layer.brush); release(layer.target);
+        if (layer.bitmap) { SelectObject(layer.dc,layer.previous); DeleteObject(layer.bitmap); layer.bitmap=nullptr; }
+        if (layer.dc) { DeleteDC(layer.dc); layer.dc=nullptr; }
+        if (layer.window && IsWindow(layer.window)) DestroyWindow(layer.window);
+        layer.window=nullptr; layer.shown=false;
+    }
+}
+
+LRESULT CALLBACK PlayerWindow::overlayProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_NCCREATE) {
+        auto* self = static_cast<PlayerWindow*>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    }
+    auto* self = reinterpret_cast<PlayerWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (!self) return DefWindowProcW(window, message, wParam, lParam);
+    switch (message) {
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_CLOSE: return 0;  // Overlays live and die with the player window.
+    default: break;
+    }
+    // While a modal dialog has disabled the player, its overlays stay inert too.
+    if (!IsWindowEnabled(self->window_)) return DefWindowProcW(window, message, wParam, lParam);
+    switch (message) {
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN:
+        if (GetForegroundWindow() != self->window_) SetForegroundWindow(self->window_);
+        [[fallthrough]];
+    case WM_MOUSEMOVE: case WM_LBUTTONUP: case WM_RBUTTONUP: {
+        // Overlay pixels sit exactly over the client area, so the player's own
+        // hit testing handles the input once it is in client coordinates.
+        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        MapWindowPoints(window, self->window_, &point, 1);
+        self->pointerWindow_ = window;
+        const LRESULT result = self->handleMessage(message, wParam,
+            MAKELPARAM(static_cast<WORD>(static_cast<SHORT>(point.x)), static_cast<WORD>(static_cast<SHORT>(point.y))));
+        self->pointerWindow_ = nullptr;
+        return result;
+    }
+    case WM_MOUSELEAVE: return self->handleMessage(WM_MOUSELEAVE, 0, 0);
+    default: break;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void PlayerWindow::drawTopBar() {
+    const auto& state=engine_.state();
+    const float right=width_-(sidebarShown()?sidebarWidth():0.f);
+    fill(rect(0,0,right,topBarHeight),ui.hud);
+    line(0,topBarHeight-.5f,right,topBarHeight-.5f,ui.hudEdge);
+    const std::array<std::tuple<int,const wchar_t*,float>,6> menus{{{FileMenu,L"File",44.f},{PlaybackMenu,L"Playback",70.f},
+        {VideoMenu,L"Video",52.f},{AudioMenu,L"Audio",52.f},{SubtitleMenu,L"Subtitles",72.f},{ViewMenu,L"View",48.f}}};
+    const float limit=right-84;
+    float x=8;
+    for (const auto& [action,label,w] : menus) {
+        if (x+w > limit) break;
+        auto bounds=rect(x,6,w,26);
+        const bool hover=hovered_ == static_cast<int>(hits_.size());
+        if (hover) fill(bounds,ui.hover,6);
+        text(label,bounds,12.5f,hover?ui.text:ui.secondary,regular,centered);
+        hits_.push_back({bounds,action,0,L"Open menu"}); x += w;
+    }
+    // Windowed mode shows the title in the native caption; fullscreen needs it here.
+    if (fullscreen_ && !state.idle && limit-x > 80)
+        text(fromUtf8(state.title.empty()?mediaTitle(state.path):state.title),rect(x+16,0,limit-x-32,topBarHeight),12.5f,ui.secondary,semibold,centered);
+    iconButton(PreferencesAction,rect(right-74,4,30,30),L"Preferences");
+    iconButton(TogglePlaylist,rect(right-38,4,30,30),L"Playlist / chapters  (P)",showPlaylist_);
+}
+
+void PlayerWindow::drawControls() {
+    const auto& state=engine_.state();
+    const auto box=controlBounds_;
+    const float cx=(box.left+box.right)/2, w=box.right-box.left;
+    hud(box,pip_?12.f:14.f);
+    if (pip_) {
+        const float cy=(box.top+box.bottom)/2;
+        iconButton(TogglePause,rect(cx-18,cy-18,36,36),L"Play / pause  (Space)");
+        iconButton(Previous,rect(cx-56,cy-15,30,30),L"Previous item");
+        iconButton(Next,rect(cx+26,cy-15,30,30),L"Next item");
+        iconButton(PictureInPicture,rect(box.right-38,cy-15,30,30),L"Leave picture in picture  (Esc)");
+        iconButton(ToggleMute,rect(box.left+8,cy-15,30,30),L"Mute  (M)",state.muted);
+        return;
+    }
+    // Row one: volume on the left, transport in the centre, tools on the right.
+    const float row=box.top+30;
+    iconButton(ToggleMute,rect(box.left+12,row-16,32,32),L"Mute  (M)",state.muted);
+    if (w>=480) {
+        volumeTrack_=rect(box.left+50,row-1.5f,72,3);
+        slider(VolumeBar,volumeTrack_,state.volume/100,L"Volume  (Up / Down)");
+    }
+    iconButton(Previous,rect(cx-66,row-16,32,32),L"Previous item  (Shift+Left)");
+    iconButton(TogglePause,rect(cx-20,row-20,40,40),state.paused?L"Play  (Space)":L"Pause  (Space)");
+    iconButton(Next,rect(cx+34,row-16,32,32),L"Next item  (Shift+Right)");
+    float x=box.right-44;
+    iconButton(ToggleFullscreen,rect(x,row-16,32,32),L"Fullscreen  (F)",fullscreen_); x-=34;
+    if (w>=520) { iconButton(Screenshot,rect(x,row-16,32,32),L"Save screenshot  (S)"); x-=34; }
+    iconButton(SubtitleMenu,rect(x,row-16,32,32),L"Subtitles  (J to cycle)"); x-=34;
+    if (w>=380) { iconButton(ToggleRepeat,rect(x,row-16,32,32),L"Repeat current file  (R)",repeating_); x-=34; }
+    if (w>=600) button(SpeedMenu,rect(x-12,row-12,44,24),number(state.speed)+L"\u00d7",L"Playback speed  ([ / ])");
+    // Row two: elapsed time, the timeline and the duration.
+    const float seekY=box.bottom-20;
+    const double position=dragAction_==SeekBar?dragPosition_:state.position;
+    text(fromUtf8(formatTime(position)),rect(box.left+14,seekY-10,56,20),11,ui.secondary);
+    text(fromUtf8(formatTime(state.duration)),rect(box.right-70,seekY-10,56,20),11,ui.secondary,regular,trailing);
+    seekTrack_=rect(box.left+74,seekY-1.5f,w-148,3);
+    slider(SeekBar,seekTrack_,state.duration>0?position/state.duration:0.,L"Seek in media");
+}
+
+void PlayerWindow::drawSidebar() {
+    const auto& state=engine_.state();
+    const auto panel=sidebarRect();
+    const float x=panel.left, w=panel.right-panel.left;
+    fill(panel,ui.base);
+    fill(panel,ui.hud);
+    line(x+.5f,0,x+.5f,height_,ui.hudEdge);
+    // Text tabs with an accent underline, as in IINA's playlist sidebar.
+    auto tab=[&](int action,int index,const wchar_t* label,bool active) {
+        const float half=(w-24)/2;
+        auto bounds=rect(x+12+half*static_cast<float>(index),0,half,topBarHeight);
+        const bool hover=hovered_==static_cast<int>(hits_.size());
+        text(label,bounds,11,active?ui.text:(hover?ui.secondary:ui.tertiary),semibold,centered);
+        if (active) fill(rect(bounds.left+half/2-14,topBarHeight-3.5f,28,2.5f),ui.accent,1.25f);
+        hits_.push_back({bounds,action,0,L"Switch sidebar"});
+    };
+    tab(PlaylistTab,0,L"PLAYLIST",!chapters_); tab(ChaptersTab,1,L"CHAPTERS",chapters_);
+    line(x,topBarHeight-.5f,panel.right,topBarHeight-.5f,ui.hairline);
+    const float listTop=topBarHeight+6, listBottom=height_-46, pitch=48;
+    const int count=static_cast<int>(chapters_?state.chapters.size():state.playlist.size());
+    const int visible=std::max(1,static_cast<int>((listBottom-listTop)/pitch));
+    listOffset_=std::clamp(listOffset_,0,std::max(0,count-visible));
+    if (count==0) {
+        const float y=listTop+std::max(8.f,(listBottom-listTop-120)/2);
+        icon(TogglePlaylist,rect(x+w/2-22,y,44,44),ui.tertiary);
+        text(chapters_?L"No chapters in this file":L"A good place for what's next.",rect(x+16,y+52,w-32,22),13,ui.secondary,regular,centered);
+        if (y+100<listBottom) text(chapters_?L"Embedded chapters appear here.":L"Add a few files to make a playlist.",rect(x+16,y+76,w-32,20),11.5f,ui.tertiary,regular,centered);
+    } else {
+        const double seconds=static_cast<double>(GetTickCount64())/1000.0;
+        for (int row=0;row<visible && row+listOffset_<count;++row) {
+            const int index=row+listOffset_;
+            const float y=listTop+static_cast<float>(row)*pitch;
+            auto bounds=rect(x+6,y,w-12,44);
+            bool current=false;
+            std::wstring title, detail;
+            if (chapters_) {
+                const auto& chapter=state.chapters[static_cast<size_t>(index)];
+                title=fromUtf8(chapter.title.empty()?"Chapter "+std::to_string(index+1):chapter.title);
+                detail=fromUtf8(formatTime(chapter.time));
+                current=state.position>=chapter.time && (index+1==count || state.position<state.chapters[static_cast<size_t>(index+1)].time);
+            } else {
+                const auto& item=state.playlist[static_cast<size_t>(index)];
+                title=fromUtf8(item.title.empty()?mediaTitle(item.filename):item.title);
+                detail=item.current ? (state.paused?L"Paused":L"Now playing") : L"Ready to play";
+                current=item.current;
+            }
+            const bool hover=hovered_==static_cast<int>(hits_.size());
+            if (current) fill(bounds,ui.accentSoft,8);
+            if (hover) fill(bounds,ui.hover,8);
+            const float rowCenter=y+22;
+            if (current && !chapters_) {
+                // Live level bars mark the playing item; they settle when paused.
+                for (int bar=0;bar<3;++bar) {
+                    const float level=state.paused ? (bar==1?.55f:.35f)
+                        : static_cast<float>(.3+.7*(.5+.5*std::sin(seconds*(5.2+bar*1.3)+bar*1.7)));
+                    const float h=4+9*level;
+                    fill(rect(x+17.5f+static_cast<float>(bar)*4.f,rowCenter+6.5f-h,2.4f,h),ui.accent,1.2f);
+                }
+            } else text(std::to_wstring(index+1),rect(x+10,y,30,44),11,current?ui.accent:ui.tertiary,current?semibold:regular,centered);
+            text(title,rect(x+44,y+4,w-60,20),13,current||hover?ui.text:ui.secondary,current?semibold:regular);
+            text(detail,rect(x+44,y+23,w-60,16),11,current?ui.accent:ui.tertiary);
+            hits_.push_back({bounds,chapters_?ChapterItem:PlayItem,index,chapters_?L"Seek to chapter":L"Play this item; right-click for playlist actions"});
+        }
+        if (count>visible) {
+            const float trackHeight=static_cast<float>(visible)*pitch-4;
+            const float thumb=std::max(24.f,trackHeight*static_cast<float>(visible)/static_cast<float>(count));
+            const float thumbTop=listTop+(trackHeight-thumb)*static_cast<float>(listOffset_)/static_cast<float>(std::max(1,count-visible));
+            fill(rect(panel.right-5,thumbTop,3,thumb),ui.track,1.5f);
+        }
+    }
+    // Bottom toolbar.
+    line(x,height_-40.5f,panel.right,height_-40.5f,ui.hairline);
+    iconButton(AddFiles,rect(x+8,height_-36,32,32),L"Add files to playlist");
+    text(std::to_wstring(count)+(chapters_?L" chapters":L" items"),rect(x+46,height_-40,w/2-46,40),11,ui.tertiary);
+    if (count>visible) text(L"Scroll for more",rect(x+w/2,height_-40,w/2-14,40),11,ui.tertiary,regular,trailing);
+}
+
+void PlayerWindow::drawWelcome(D2D1_RECT_F area) {
+    // Modelled on IINA's welcome window: identity and actions on the left,
+    // recent media on the right.
+    const float w=area.right-area.left, h=area.bottom-area.top;
+    const bool wide=w>=680 && h>=300;
+    const bool compact=h<360;
+    const auto& recent=preferences_.recentFiles;
+    const float column=wide?std::min(340.f,w*.44f):w;
+    const float cx=area.left+column/2;
+    const float rowsWidth=std::min(264.f,column-40);
+    const float blockHeight=(compact?0.f:104.f)+60+3*38+28;
+    float y=area.top+std::max(12.f,(h-blockHeight-(wide||recent.empty()||compact?0.f:150.f))/2);
+    if (!compact) {
+        // Original geometric Velin mark; no IINA artwork is reused.
+        const auto tile=rect(cx-42,y,84,84);
+        gradient(tile,hex(0x6e6af0),hex(0x0a7cff),20);
+        outline(tile,D2D1::ColorF(1,1,1,.18f),20);
+        line(cx-17,y+31,cx,y+55,D2D1::ColorF(1,1,1),5.5f);
+        line(cx,y+55,cx+17,y+31,D2D1::ColorF(1,1,1),5.5f);
+        y+=104;
+    }
+    text(L"Velin",rect(area.left+16,y,column-32,34),26,ui.text,semibold,centered);
+    text(fromUtf8(std::string("Version ")+VELIN_VERSION),rect(area.left+16,y+34,column-32,20),12,ui.tertiary,regular,centered);
+    y+=68;
+    struct Entry { int action; const wchar_t* label; const wchar_t* shortcut; const wchar_t* hint; };
+    const std::array<Entry,3> entries{{
+        {OpenFiles,L"Open Files\u2026",L"Ctrl+O",L"Open media files  (Ctrl+O)"},
+        {OpenUrl,L"Open URL\u2026",L"Ctrl+L",L"Open a network stream  (Ctrl+L)"},
+        {OpenFolder,L"Open Folder\u2026",L"Ctrl+Shift+O",L"Open a folder  (Ctrl+Shift+O)"}}};
+    for (const auto& entry : entries) {
+        const auto bounds=rect(cx-rowsWidth/2,y,rowsWidth,34);
+        const bool hover=hovered_==static_cast<int>(hits_.size());
+        if (hover) fill(bounds,ui.hover,8);
+        icon(entry.action,rect(bounds.left+4,bounds.top+3,28,28),ui.accent);
+        text(entry.label,rect(bounds.left+38,bounds.top,rowsWidth-120,34),13,ui.text);
+        text(entry.shortcut,rect(bounds.right-104,bounds.top,94,34),11.5f,ui.tertiary,regular,trailing);
+        hits_.push_back({bounds,entry.action,0,entry.hint});
+        y+=38;
+    }
+    text(L"or drop files or a folder anywhere",rect(area.left+16,y+4,column-32,20),11.5f,ui.tertiary,regular,centered);
+    // Runtime status sits quietly at the foot of the identity column.
+    const std::wstring status=engine_.ready()?L"libmpv connected":L"Playback runtime missing \u00b7 See File > About for setup";
+    const float statusWidth=std::min(column-48,textWidth(status,11)+14);
+    const float statusLeft=cx-statusWidth/2;
+    if (area.bottom-30>y+30) {
+        circle(statusLeft+3,area.bottom-20,3,engine_.ready()?ui.positive:ui.danger);
+        text(status,rect(statusLeft+12,area.bottom-30,statusWidth-12,20),11,engine_.ready()?ui.tertiary:ui.danger);
+    }
+    const auto recentRow=[&](size_t index,D2D1_RECT_F bounds) {
+        const bool hover=hovered_==static_cast<int>(hits_.size());
+        const float rowCenter=(bounds.top+bounds.bottom)/2;
+        if (hover) fill(bounds,ui.hover,8);
+        circle(bounds.left+22,rowCenter,13,ui.accentSoft);
+        icon(RecentItem,rect(bounds.left+8,rowCenter-14,28,28),ui.accent);
+        const auto& path=recent[index];
+        std::wstring location=fromUtf8(path);
+        if (path.find("://")==std::string::npos) location=std::filesystem::path(location).parent_path().wstring();
+        text(fromUtf8(mediaTitle(path)),rect(bounds.left+44,bounds.top+5,bounds.right-bounds.left-56,20),13,ui.text);
+        text(location,rect(bounds.left+44,bounds.top+24,bounds.right-bounds.left-56,16),11,ui.tertiary);
+        hits_.push_back({bounds,RecentItem,static_cast<int>(index),L"Open recent media"});
+    };
+    if (wide) {
+        const auto panel=rect(area.left+column,area.top+20,w-column-20,h-40);
+        fill(panel,ui.panel,12);
+        outline(panel,ui.hairline,12);
+        text(L"Recent",rect(panel.left+18,panel.top+10,160,28),13,ui.secondary,semibold);
+        if (recent.empty()) {
+            const float my=(panel.top+panel.bottom)/2;
+            text(L"No recent media",rect(panel.left+16,my-22,panel.right-panel.left-32,22),13,ui.secondary,regular,centered);
+            text(L"Files you open will appear here.",rect(panel.left+16,my+2,panel.right-panel.left-32,20),11.5f,ui.tertiary,regular,centered);
+        }
+        for (size_t i=0;i<recent.size();++i) {
+            const auto bounds=rect(panel.left+8,panel.top+44+static_cast<float>(i)*50,panel.right-panel.left-16,46);
+            if (bounds.bottom>panel.bottom-8) break;
+            recentRow(i,bounds);
+        }
+    } else if (!compact && !recent.empty()) {
+        float rowTop=y+40;
+        const float listWidth=std::min(420.f,w-48);
+        if (rowTop+70<area.bottom-36) text(L"Recent",rect(cx-listWidth/2+8,rowTop,listWidth,20),11.5f,ui.tertiary,semibold);
+        rowTop+=24;
+        for (size_t i=0;i<std::min<size_t>(3,recent.size());++i) {
+            const auto bounds=rect(cx-listWidth/2,rowTop+static_cast<float>(i)*50,listWidth,46);
+            if (bounds.bottom>area.bottom-36) break;
+            recentRow(i,bounds);
+        }
+    }
+}
+
+void PlayerWindow::drawNowPlaying(D2D1_RECT_F area) {
+    // Audio has no picture, so present it like IINA's music mode: a large art
+    // tile with the title and stream details beneath.
+    const auto& state=engine_.state();
+    const float w=area.right-area.left, h=area.bottom-area.top;
+    const float art=std::clamp(std::min(w,h)-150,64.f,200.f);
+    const float cx=(area.left+area.right)/2;
+    const float top=area.top+std::max(12.f,(h-art-76)/2);
+    const auto tile=rect(cx-art/2,top,art,art);
+    gradient(tile,lightAppearance?hex(0xdcdce0):hex(0x3a3a3e),lightAppearance?hex(0xc8c8ce):hex(0x232326),art*.1f);
+    outline(tile,ui.hairline,art*.1f);
+    // A pair of beamed notes.
+    const float s=art/120;
+    const auto ink=fade(ui.text,.5f);
+    circle(cx-14*s,top+art*.62f,9*s,ink); circle(cx+18*s,top+art*.56f,9*s,ink);
+    line(cx-6*s,top+art*.62f,cx-6*s,top+art*.28f,ink,3.5f*s);
+    line(cx+26*s,top+art*.56f,cx+26*s,top+art*.22f,ink,3.5f*s);
+    line(cx-6*s,top+art*.28f,cx+26*s,top+art*.22f,ink,6*s);
+    text(fromUtf8(state.title.empty()?mediaTitle(state.path):state.title),rect(area.left+24,top+art+16,w-48,30),20,ui.text,semibold,centered);
+    std::wstring detail=L"AUDIO  \u00b7  "+fromUtf8(state.audioCodec);
+    if (auto artist=state.metadata.find("artist");artist!=state.metadata.end() && !artist->second.empty()) detail=fromUtf8(artist->second)+L"  \u00b7  "+detail;
+    text(detail,rect(area.left+24,top+art+48,w-48,22),11.5f,ui.secondary,regular,centered);
+}
+
+void PlayerWindow::drawNotice(D2D1_RECT_F bounds) {
+    // On-screen display in the top-left corner, as IINA shows its OSD.
+    hud(bounds,10);
+    float left=bounds.left+16;
+    if (noticeError_) { circle(left+3,(bounds.top+bounds.bottom)/2,3.5f,ui.danger); left+=16; }
+    text(notice_,rect(left,bounds.top,bounds.right-left-14,bounds.bottom-bounds.top),14,ui.text,semibold);
+}
+
+void PlayerWindow::drawTooltip(D2D1_RECT_F bounds, std::wstring_view tip) {
+    hud(bounds,6);
+    text(tip,bounds,12,ui.text,regular,centered);
 }
 
 void PlayerWindow::draw() {
@@ -642,256 +1092,57 @@ void PlayerWindow::draw() {
     if (!target_ || !brush_) return;
     const auto& state = engine_.state();
     hits_.clear();
+    const bool live = IsWindowVisible(window_) && !IsIconic(window_);
+    const bool chrome = live && chromeShown();
+    const float contentRight = width_-(sidebarShown()?sidebarWidth():0.f);
+    // Overlays render first so their hit targets take precedence over
+    // anything drawn on the canvas beneath them.
+    const bool controls = chrome && controlsVisible_ && !state.idle;
+    if (controls) controlBounds_ = controlRect();
+    if (controls && beginLayer(ControlLayer,expand(controlBounds_,layerMargin))) { drawControls(); endLayer(ControlLayer); }
+    else hideLayer(ControlLayer);
+    const bool topBar = chrome && !pip_ && (state.idle || controlsVisible_);
+    if (topBar && beginLayer(TopBarLayer,rect(0,0,contentRight,topBarHeight))) { drawTopBar(); endLayer(TopBarLayer); }
+    else hideLayer(TopBarLayer);
+    // The canvas: black behind video, the docked sidebar, the welcome screen
+    // when idle, and the now-playing view for audio.
+    canvas_ = target_; paint_ = brush_;
     target_->BeginDraw();
-    target_->Clear(ui.base);
-    if(uiHidden_ && !state.idle){if(target_->EndDraw()==D2DERR_RECREATE_TARGET)discardTarget();updateAccessibility();return;}
-    if (pip_) {
-        if (controlsVisible_) {
-            const float cy=height_-26;
-            line(0,height_-51.5f,width_,height_-51.5f,ui.hairline);
-            playButton(rect(width_/2-19,cy-19,38,38),L"Play / pause  (Space)");
-            iconButton(Previous,rect(width_/2-65,cy-17,34,34),L"Previous item");
-            iconButton(Next,rect(width_/2+31,cy-17,34,34),L"Next item");
-            button(PictureInPicture,rect(width_-80,cy-14,70,28),L"Restore",L"Leave picture in picture  (Esc)");
-            iconButton(ToggleMute,rect(8,cy-17,34,34),L"Mute  (M)",state.muted);
-        }
-        if (target_->EndDraw()==D2DERR_RECREATE_TARGET) discardTarget();
-        updateAccessibility(); return;
+    const bool picture = !state.idle && state.width > 0;
+    target_->Clear(picture ? ui.video : ui.base);
+    const COLORREF caption = lightAppearance ? RGB(236,236,236) : picture ? RGB(0,0,0) : RGB(28,28,30);
+    if (caption != captionColor_) { DwmSetWindowAttribute(window_,35,&caption,sizeof(caption)); captionColor_ = caption; }
+    if (chrome && sidebarShown()) drawSidebar();
+    if (chrome && state.idle) drawWelcome(rect(0,topBarHeight,contentRight,height_-topBarHeight));
+    else if (chrome && state.loaded && state.width == 0)
+        drawNowPlaying({0,topBarHeight,contentRight,controls?controlBounds_.top-8:height_});
+    const HRESULT result = target_->EndDraw();
+    if (result == D2DERR_RECREATE_TARGET) discardTarget();
+    // Notices and tooltips float above everything and never take input.
+    if (chrome && GetTickCount64() < noticeUntil_ && !notice_.empty()) {
+        const float top = (topBar?topBarHeight:0.f)+14;
+        const float w = std::min(std::max(120.f,contentRight-32), textWidth(notice_,14,semibold)+(noticeError_?48.f:32.f));
+        if (beginLayer(NoticeLayer,expand(rect(16,top,w,40),layerMargin))) { drawNotice(rect(16,top,w,40)); endLayer(NoticeLayer); }
+    } else hideLayer(NoticeLayer);
+    std::wstring tip;
+    D2D1_RECT_F anchor{};
+    if (chrome && dragAction_ == VolumeBar) { tip = L"Volume  "+std::to_wstring(static_cast<int>(state.volume))+L"%"; anchor = volumeTrack_; }
+    else if (chrome && dragAction_ == None && hovered_ >= 0 && hovered_ < static_cast<int>(hits_.size())) {
+        const auto& hit = hits_[static_cast<size_t>(hovered_)];
+        const bool described = hit.action != SeekBar && hit.action != PlayItem && hit.action != ChapterItem &&
+            hit.action != RecentItem && hit.action != PlaylistTab && hit.action != ChaptersTab &&
+            hit.action != OpenFiles && hit.action != OpenUrl && hit.action != OpenFolder &&
+            (hit.action < FileMenu || hit.action > ViewMenu);
+        if (hit.action == VolumeBar) tip = L"Volume  "+std::to_wstring(static_cast<int>(state.volume))+L"%  \u00b7  Up / Down";
+        else if (described) tip = hit.hint;
+        anchor = hit.rect;
     }
-    if (fullscreen_ && !state.idle && !controlsVisible_) {
-        if (target_->EndDraw()==D2DERR_RECREATE_TARGET) discardTarget();
-        return;
-    }
-    // The entire interface uses device-independent pixels and real DirectWrite text.
-    if (!fullscreen_ || state.idle) {
-    // Brand: a gradient monogram tile beside a quiet wordmark.
-    const auto mark=rect(gutter,18,28,28);
-    gradient(mark,ui.accentHigh,ui.accentLow,8);
-    outline(mark,D2D1::ColorF(1,1,1,.2f),8);
-    line(gutter+8.5f,27,gutter+14,37.5f,ui.onAccent,2.4f); line(gutter+14,37.5f,gutter+19.5f,27,ui.onAccent,2.4f);
-    text(L"velin",rect(gutter+38,16,62,32),19,ui.text,semibold);
-    line(gutter+104.5f,25,gutter+104.5f,39,ui.hairline);
-    const std::array<std::tuple<int,const wchar_t*,float>,6> menus{{{FileMenu,L"File",48.f},{PlaybackMenu,L"Playback",76.f},
-        {VideoMenu,L"Video",58.f},{AudioMenu,L"Audio",58.f},{SubtitleMenu,L"Subtitles",78.f},{ViewMenu,L"View",54.f}}};
-    float menuX = gutter+114;
-    for (const auto& [action,label,w] : menus) {
-        if (menuX+w > width_-gutter-92) break;
-        auto bounds = rect(menuX,16,w,32);
-        const bool hover=hovered_ == static_cast<int>(hits_.size());
-        if (hover) fill(bounds,ui.hover,8);
-        text(label,bounds,13,hover?ui.text:ui.secondary,regular,centered);
-        hits_.push_back({bounds,action,0,L"Open menu"}); menuX += w+2;
-    }
-    iconButton(PreferencesAction,rect(width_-gutter-74,15,34,34),L"Preferences");
-    iconButton(TogglePlaylist,rect(width_-gutter-34,15,34,34),L"Playlist / chapters  (P)",showPlaylist_);
-    }
-    const auto view = videoRect();
-    const bool framed = !fullscreen_ || state.idle;
-    fill(view,ui.stage,framed?14.f:0.f);
-    if (framed) outline(view,ui.hairline,14);
-    if (state.idle) {
-        const float center = (view.left+view.right)/2;
-        const float areaWidth = view.right-view.left, areaHeight = view.bottom-view.top;
-        const bool smallLayout = areaHeight < 380;
-        const bool showRecent = !smallLayout && !preferences_.recentFiles.empty();
-        const float blockHeight = (smallLayout?180.f:272.f)+(showRecent?160.f:0.f);
-        const float top = view.top + std::max(20.f,(areaHeight-blockHeight)/2);
-        if (!smallLayout) {
-            // Original geometric Velin mark; no IINA artwork is reused.
-            const auto tile=rect(center-36,top,72,72);
-            gradient(tile,fade(ui.accent,.2f),fade(ui.accent,.05f),22);
-            outline(tile,fade(ui.accent,.28f),22);
-            line(center-15,top+27,center,top+47,ui.accent,4.5f);
-            line(center,top+47,center+15,top+27,ui.accent,4.5f);
-        }
-        const float headingY = smallLayout ? top : top+96;
-        text(L"Make room for the movie.",rect(view.left+16,headingY,areaWidth-32,42),
-            smallLayout ? 24.f : 30.f,ui.text,semibold,centered);
-        text(L"Your videos, music, and a moment to yourself.",rect(view.left+16,headingY+44,areaWidth-32,24),
-            14,ui.secondary,regular,centered);
-        button(OpenFiles,rect(center-146,headingY+88,148,44),L"Open files",L"Open media files  (Ctrl+O)",true);
-        button(OpenUrl,rect(center+10,headingY+88,136,44),L"Open URL",L"Open a network stream  (Ctrl+L)");
-        text(L"or drop files or a folder anywhere",rect(view.left+16,headingY+146,areaWidth-32,22),
-            12,ui.tertiary,regular,centered);
-        if (showRecent) {
-            const float y = headingY+192;
-            if (y+70 < view.bottom-16) {
-                const float listWidth = std::min(460.f,areaWidth-48), left = center-listWidth/2;
-                text(L"PICK UP WHERE YOU LEFT OFF",rect(left+4,y,listWidth-8,18),10.5f,ui.tertiary,semibold);
-                for (size_t i=0;i<std::min<size_t>(3,preferences_.recentFiles.size());++i) {
-                    auto bounds = rect(left,y+26+static_cast<float>(i)*50,listWidth,44);
-                    if (bounds.bottom > view.bottom-16) break;
-                    const bool hover = hovered_ == static_cast<int>(hits_.size());
-                    const float rowCenter = bounds.top+22;
-                    fill(bounds,hover?ui.hover:fade(ui.text,.025f),12);
-                    outline(bounds,ui.hairline,12);
-                    circle(left+24,rowCenter,14,ui.accentSoft);
-                    icon(RecentItem,rect(left+10,rowCenter-14,28,28),ui.accent);
-                    text(fromUtf8(mediaTitle(preferences_.recentFiles[i])),rect(left+48,bounds.top,listWidth-128,44),13,hover?ui.text:ui.secondary);
-                    text(L"Play",rect(bounds.right-84,bounds.top,54,44),12,ui.accent,semibold,trailing);
-                    line(bounds.right-22,rowCenter-4,bounds.right-18,rowCenter,ui.accent,1.6f);
-                    line(bounds.right-18,rowCenter,bounds.right-22,rowCenter+4,ui.accent,1.6f);
-                    hits_.push_back({bounds,RecentItem,static_cast<int>(i),L"Open recent media"});
-                }
-            }
-        }
-    }
-    if (!state.idle && state.loaded && state.width==0) {
-        const float cx=(view.left+view.right)/2,cy=(view.top+view.bottom)/2-36;
-        const float discY=cy-24;
-        circle(cx,discY,78,fade(ui.accent,.05f));
-        circle(cx,discY,62,ui.raised);
-        brush_->SetColor(ui.hairline);
-        for (float radius:{55.f,48.f,41.f,34.f}) target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx,discY),radius,radius),brush_,1.f);
-        gradient(rect(cx-20,discY-20,40,40),ui.accentHigh,ui.accentLow,20);
-        circle(cx,discY,3.5f,ui.raised);
-        text(fromUtf8(state.title.empty()?mediaTitle(state.path):state.title),rect(view.left+24,cy+54,view.right-view.left-48,36),22,ui.text,semibold,centered);
-        text(L"AUDIO  ·  "+fromUtf8(state.audioCodec),rect(view.left+24,cy+92,view.right-view.left-48,22),11,ui.accent,semibold,centered);
-    }
-    if (sidebarWidth()>0 && (!fullscreen_ || state.idle)) {
-        const auto card = sidebarRect();
-        const float x = card.left, w = card.right-card.left;
-        fill(card,ui.surface,14);
-        outline(card,ui.hairline,14);
-        text(chapters_ ? L"Chapters" : L"Up next",rect(x+18,card.top+14,w-80,30),15,ui.text,semibold);
-        iconButton(AddFiles,rect(card.right-46,card.top+13,32,32),L"Add files to playlist");
-        // Segmented control: a recessed track with a raised selection.
-        const auto segments = rect(x+14,card.top+54,w-28,32);
-        fill(segments,ui.hover,10);
-        auto tab = [&](int action,int index,const wchar_t* label,bool active) {
-            const float segment = (segments.right-segments.left-6)/2;
-            auto bounds = rect(segments.left+3+segment*static_cast<float>(index),segments.top+3,segment,26);
-            const bool hover = hovered_ == static_cast<int>(hits_.size());
-            if (active) { fill(bounds,ui.elevated,8); outline(bounds,ui.hairline,8); }
-            text(label,bounds,12,active||hover?ui.text:ui.secondary,active?semibold:regular,centered);
-            hits_.push_back({bounds,action,0,L"Switch sidebar"});
-        };
-        tab(PlaylistTab,0,L"Playlist",!chapters_); tab(ChaptersTab,1,L"Chapters",chapters_);
-        const float listTop = card.top+100, listBottom = card.bottom-44, pitch = 56;
-        const int count = static_cast<int>(chapters_?state.chapters.size():state.playlist.size());
-        const int visible = std::max(1,static_cast<int>((listBottom-listTop)/pitch));
-        listOffset_ = std::clamp(listOffset_,0,std::max(0,count-visible));
-        if (count == 0) {
-            const float y = listTop+std::max(8.f,(listBottom-listTop-130)/2);
-            circle(x+w/2,y+26,26,ui.hover);
-            icon(TogglePlaylist,rect(x+w/2-22,y+4,44,44),ui.tertiary);
-            text(chapters_?L"No chapters in this file":L"A good place for what's next.",rect(x+16,y+64,w-32,24),13,ui.text,regular,centered);
-            if (y+112<listBottom) text(chapters_?L"Embedded chapters appear here.":L"Add a few files to make a playlist.",rect(x+16,y+88,w-32,22),12,ui.tertiary,regular,centered);
-        } else {
-            const double seconds = static_cast<double>(GetTickCount64())/1000.0;
-            for (int row=0;row<visible && row+listOffset_<count;++row) {
-                const int index=row+listOffset_;
-                const float y=listTop+static_cast<float>(row)*pitch;
-                auto bounds=rect(x+8,y,w-16,52);
-                bool current=false;
-                std::wstring title, detail;
-                if (chapters_) {
-                    const auto& chapter=state.chapters[static_cast<size_t>(index)];
-                    title=fromUtf8(chapter.title.empty()?"Chapter "+std::to_string(index+1):chapter.title);
-                    detail=fromUtf8(formatTime(chapter.time));
-                    current=state.position>=chapter.time && (index+1==count || state.position<state.chapters[static_cast<size_t>(index+1)].time);
-                } else {
-                    const auto& item=state.playlist[static_cast<size_t>(index)];
-                    title=fromUtf8(item.title.empty()?mediaTitle(item.filename):item.title);
-                    detail=item.current ? (state.paused?L"Paused":L"Now playing") : L"Ready to play";
-                    current=item.current;
-                }
-                const bool hover=hovered_==static_cast<int>(hits_.size());
-                if (current) fill(bounds,ui.accentSoft,10);
-                if (hover) fill(bounds,ui.hover,10);
-                const float rowCenter=y+26;
-                if (current && !chapters_) {
-                    // Live level bars mark the playing item; they settle when paused.
-                    for (int bar=0;bar<3;++bar) {
-                        const float level=state.paused ? (bar==1?.55f:.35f)
-                            : static_cast<float>(.3+.7*(.5+.5*std::sin(seconds*(5.2+bar*1.3)+bar*1.7)));
-                        const float h=4+10*level;
-                        fill(rect(x+23.5f+static_cast<float>(bar)*4.5f,rowCenter+7-h,2.6f,h),ui.accent,1.3f);
-                    }
-                } else text(std::to_wstring(index+1),rect(x+14,y,30,52),12,current?ui.accent:ui.tertiary,current?semibold:regular,centered);
-                text(title,rect(x+52,y+7,w-76,22),13,current||hover?ui.text:ui.secondary,current?semibold:regular);
-                text(detail,rect(x+52,y+28,w-76,18),11,current?ui.accent:ui.tertiary);
-                hits_.push_back({bounds,chapters_?ChapterItem:PlayItem,index,chapters_?L"Seek to chapter":L"Play this item; right-click for playlist actions"});
-            }
-            if (count>visible) {
-                const float trackHeight=static_cast<float>(visible)*pitch-4;
-                const float thumb=std::max(24.f,trackHeight*static_cast<float>(visible)/static_cast<float>(count));
-                const float thumbTop=listTop+(trackHeight-thumb)*static_cast<float>(listOffset_)/static_cast<float>(std::max(1,count-visible));
-                fill(rect(card.right-6.5f,thumbTop,3,thumb),ui.track,1.5f);
-            }
-        }
-        line(x+16,card.bottom-40.5f,card.right-16,card.bottom-40.5f,ui.hairline);
-        text(std::to_wstring(count)+(chapters_?L" chapters":L" items"),rect(x+18,card.bottom-39,w/2-18,38),11,ui.tertiary);
-        if (count>visible) text(L"Scroll for more",rect(x+w/2,card.bottom-39,w/2-18,38),11,ui.tertiary,regular,trailing);
-    }
-    // Transport dock. It stays outside the video HWND so it also works with D3D11 output.
-    const float seekY=height_-dockHeight+26;
-    seekTrack_=rect(gutter+64,seekY-2,width_-2*gutter-128,4);
-    const bool seekHot=hovered_==static_cast<int>(hits_.size()) || dragAction_==SeekBar;
-    const float trackHeight=seekHot?6.f:4.f;
-    const auto track=rect(seekTrack_.left,seekY-trackHeight/2,seekTrack_.right-seekTrack_.left,trackHeight);
-    fill(track,ui.track,trackHeight/2);
-    const double position=dragAction_==SeekBar?dragPosition_:state.position;
-    const float fraction=state.duration>0?static_cast<float>(std::clamp(position/state.duration,0.,1.)):0.f;
-    const float progress=(track.right-track.left)*fraction;
-    if (progress>0) gradient(rect(track.left,track.top,std::max(progress,trackHeight),trackHeight),ui.accentLow,ui.accent,trackHeight/2,true);
-    if (preferences_.showChapterMarkers && state.duration>0) for (const auto& chapter:state.chapters) {
-        if (chapter.time>0 && chapter.time<state.duration) {
-            // Chapters notch the track rather than sitting on top of it.
-            const float x=track.left+(track.right-track.left)*static_cast<float>(chapter.time/state.duration);
-            fill(rect(x-1,track.top-.5f,2,trackHeight+1),ui.base);
-        }
-    }
-    if (fraction>0 || dragAction_==SeekBar) {
-        const float knobX=track.left+progress;
-        if (seekHot) circle(knobX,seekY,11,fade(ui.accent,.2f));
-        circle(knobX,seekY,seekHot?7.f:5.5f,ui.accent);
-        circle(knobX,seekY,seekHot?4.f:3.f,D2D1::ColorF(1,1,1));
-    }
-    hits_.push_back({rect(seekTrack_.left-6,seekY-11,seekTrack_.right-seekTrack_.left+12,22),SeekBar,0,L"Seek in media"});
-    text(fromUtf8(formatTime(position)),rect(gutter,seekY-11,58,22),11.5f,ui.secondary);
-    text(fromUtf8(formatTime(state.duration)),rect(width_-gutter-58,seekY-11,58,22),11.5f,ui.tertiary,regular,trailing);
-    const float cy=height_-62;
-    iconButton(ToggleMute,rect(gutter-6,cy-17,34,34),L"Mute  (M)",state.muted);
-    volumeTrack_=rect(gutter+38,cy-2,84,4);
-    const bool volumeHot=hovered_==static_cast<int>(hits_.size()) || dragAction_==VolumeBar;
-    const float level=static_cast<float>(std::clamp(state.volume/100,0.,1.));
-    const float volumeX=volumeTrack_.left+(volumeTrack_.right-volumeTrack_.left)*level;
-    fill(volumeTrack_,ui.track,2);
-    fill(rect(volumeTrack_.left,volumeTrack_.top,volumeX-volumeTrack_.left,4),state.muted?ui.tertiary:(volumeHot?ui.accent:ui.secondary),2);
-    if (volumeHot) circle(volumeX,cy,10,fade(ui.accent,.18f));
-    circle(volumeX,cy,volumeHot?6.f:5.f,state.muted?ui.tertiary:ui.text);
-    hits_.push_back({rect(volumeTrack_.left-6,cy-12,(volumeTrack_.right-volumeTrack_.left)+12,24),VolumeBar,0,L"Volume  (Up / Down)"});
-    text(std::to_wstring(static_cast<int>(state.volume))+L"%",rect(volumeTrack_.right+12,cy-12,44,24),11.5f,ui.tertiary);
-    const float center=width_/2;
-    iconButton(Previous,rect(center-83,cy-18,36,36),L"Previous item  (Shift+Left)");
-    playButton(rect(center-25,cy-25,50,50),state.paused?L"Play  (Space)":L"Pause  (Space)");
-    iconButton(Next,rect(center+47,cy-18,36,36),L"Next item  (Shift+Right)");
-    const float fullscreenX=width_-gutter-28;
-    if (width_>=900) button(SpeedMenu,rect(fullscreenX-172,cy-14,48,28),number(state.speed)+L"×",L"Playback speed  ([ / ])");
-    iconButton(ToggleRepeat,rect(fullscreenX-114,cy-17,34,34),L"Repeat current file  (R)",repeating_);
-    iconButton(SubtitleMenu,rect(fullscreenX-76,cy-17,34,34),L"Subtitles  (J to cycle)");
-    iconButton(Screenshot,rect(fullscreenX-38,cy-17,34,34),L"Save screenshot  (S)");
-    iconButton(ToggleFullscreen,rect(fullscreenX,cy-17,34,34),L"Fullscreen  (F)",fullscreen_);
-    // Status line: a coloured dot flags notices and errors; hints stay quiet.
-    const float statusTop=height_-26;
-    line(gutter,statusTop+.5f,width_-gutter,statusTop+.5f,ui.hairline);
-    std::wstring status;
-    D2D1_COLOR_F statusColor=ui.tertiary;
-    bool flagged=false;
-    if (GetTickCount64()<noticeUntil_) { status=notice_; statusColor=noticeError_?ui.danger:ui.accent; flagged=true; }
-    else if (hovered_>=0 && hovered_<static_cast<int>(hits_.size())) { status=hits_[static_cast<size_t>(hovered_)].hint; statusColor=ui.secondary; }
-    else if (!engine_.ready()) { status=L"Playback runtime missing · See File > About for setup"; statusColor=ui.danger; flagged=true; }
-    else if (state.idle) status=L"Ready when you are";
-    else status=fromUtf8(state.title.empty()?mediaTitle(state.path):state.title);
-    const float statusX=flagged?gutter+12:gutter;
-    if (flagged) circle(gutter+3,statusTop+13,3,statusColor);
-    text(status,rect(statusX,statusTop,width_-gutter-200-statusX,26),11,statusColor);
-    const std::wstring engineLabel=engine_.ready()?L"libmpv connected":L"runtime unavailable";
-    text(engineLabel,rect(width_-gutter-180,statusTop,180,26),11,ui.tertiary,regular,trailing);
-    circle(width_-gutter-textWidth(engineLabel,11)-9,statusTop+13,3,engine_.ready()?ui.positive:ui.danger);
-    const HRESULT result=target_->EndDraw();
-    if (result==D2DERR_RECREATE_TARGET) discardTarget();
+    if (!tip.empty()) {
+        const float w = textWidth(tip,12)+20, h = 26;
+        const float left = std::clamp((anchor.left+anchor.right-w)/2,6.f,std::max(6.f,width_-w-6));
+        const float top = anchor.top-h-10 >= 4 ? anchor.top-h-10 : anchor.bottom+10;
+        if (beginLayer(TooltipLayer,expand(rect(left,top,w,h),10))) { drawTooltip(rect(left,top,w,h),tip); endLayer(TooltipLayer); }
+    } else hideLayer(TooltipLayer);
     updateAccessibility();
 }
 
@@ -1007,7 +1258,7 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
         return 0;
     case WM_GETMINMAXINFO: {
         auto* limits=reinterpret_cast<MINMAXINFO*>(lParam);
-        limits->ptMinTrackSize={static_cast<LONG>((pip_?240:740)*dpi_),static_cast<LONG>((pip_?135:500)*dpi_)};
+        limits->ptMinTrackSize={static_cast<LONG>((pip_?240.f:minWindowWidth)*dpi_),static_cast<LONG>((pip_?135.f:minWindowHeight)*dpi_)};
         return 0;
     }
     case WM_SIZING:
@@ -1040,9 +1291,15 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
             if(deferredClose_ && (!plugins_ || !plugins_->busy())){deferredClose_=false;PostMessageW(window_,WM_CLOSE,0,0);return 0;}
             pollServices();
             const auto& state=engine_.state();
-            const bool visible=(!fullscreen_ && !pip_) || !preferences_.fullscreenAutoHide || state.idle || state.paused || state.width==0 || GetTickCount64()<interactionUntil_ || hovered_>=0;
-            if (controlsVisible_!=visible) { controlsVisible_=visible; layoutVideo(); }
-            if (!IsIconic(window_) && ((!state.idle && !state.paused && (!fullscreen_ || controlsVisible_)) || (noticeUntil_>0 && GetTickCount64()>=noticeUntil_))) {
+            // A hover can outlive its overlay (it may hide under the pointer), so
+            // drop it once the pointer is no longer over any part of the player.
+            POINT cursor{}; GetCursorPos(&cursor); const HWND under=WindowFromPoint(cursor);
+            if (hovered_>=0 && dragAction_==None && under!=window_ && !IsChild(window_,under) && !isLayerWindow(under)) { hovered_=-1; preview_.hide(); InvalidateRect(window_,nullptr,FALSE); }
+            // Controls float over the picture, so they step aside during playback
+            // until the pointer moves, as in IINA.
+            const bool visible=!preferences_.fullscreenAutoHide || state.idle || state.paused || state.width==0 || GetTickCount64()<interactionUntil_ || hovered_>=0 || pointerOverChrome();
+            if (controlsVisible_!=visible) { controlsVisible_=visible; layoutVideo(); InvalidateRect(window_,nullptr,FALSE); }
+            if (!IsIconic(window_) && ((!state.idle && !state.paused && (controlsVisible_ || sidebarShown())) || (noticeUntil_>0 && GetTickCount64()>=noticeUntil_))) {
                 InvalidateRect(window_,nullptr,FALSE);
                 if (GetTickCount64()>=noticeUntil_) noticeUntil_=0;
             }
@@ -1058,10 +1315,10 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
             if (hovered_!=hit) { hovered_=hit; InvalidateRect(window_,nullptr,FALSE); }
             if (hit>=0 && hits_[static_cast<size_t>(hit)].action==SeekBar && preferences_.showTimelineThumbnails && engine_.state().duration>0 && thumbnails_.available()) {
                 const double time=std::clamp(static_cast<double>((x-seekTrack_.left)/std::max(1.f,seekTrack_.right-seekTrack_.left)),0.,1.)*engine_.state().duration;
-                thumbnailAnchor_={GET_X_LPARAM(lParam),static_cast<LONG>((seekTrack_.top-10)*dpi_)}; ClientToScreen(window_,&thumbnailAnchor_);
+                thumbnailAnchor_={GET_X_LPARAM(lParam),static_cast<LONG>((controlBounds_.top+4)*dpi_)}; ClientToScreen(window_,&thumbnailAnchor_);
                 if (std::abs(time-thumbnailTime_)>=.5) { thumbnailTime_=time; thumbnails_.request(engine_.state().path,time,static_cast<unsigned>(preferences_.timelineThumbnailWidth)); }
             } else { preview_.hide(); thumbnailTime_=-1; }
-            TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,window_,0}; TrackMouseEvent(&tracking);
+            TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,pointerWindow_?pointerWindow_:window_,0}; TrackMouseEvent(&tracking);
             SetCursor(LoadCursorW(nullptr,hit>=0?IDC_HAND:IDC_ARROW));
         }
         return 0;
@@ -1099,7 +1356,7 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
     case WM_MOUSEWHEEL: {
         POINT point{GET_X_LPARAM(lParam),GET_Y_LPARAM(lParam)}; ScreenToClient(window_,&point);
         const int delta=GET_WHEEL_DELTA_WPARAM(wParam);
-        if (sidebarWidth()>0 && static_cast<float>(point.x)/dpi_>=sidebarRect().left && static_cast<float>(point.y)/dpi_<sidebarRect().bottom) {
+        if (sidebarShown() && static_cast<float>(point.x)/dpi_>=sidebarRect().left && static_cast<float>(point.y)/dpi_<sidebarRect().bottom) {
             listOffset_+=delta>0?-1:1; InvalidateRect(window_,nullptr,FALSE);
         } else engine_.setVolume(engine_.state().volume+(delta>0?preferences_.volumeStep:-preferences_.volumeStep));
         return 0;
@@ -1156,7 +1413,7 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
         if (const auto arguments=receiveLaunchRequest(lParam)) { acceptLaunch(*arguments); return TRUE; }
         return FALSE;
     case WM_SETTINGCHANGE: if (preferences_.theme==Theme::System) applyTheme(); return 0;
-    case WM_MOVE: updateWebViews(); updateAccessibility(); return 0;
+    case WM_MOVE: moveLayers(); updateWebViews(); updateAccessibility(); return 0;
     case WM_ACTIVATEAPP:
         if (preferences_.pauseWhenInactive && !engine_.state().idle) {
             if (!wParam && !engine_.state().paused) { pausedByWindow_=true; engine_.setProperty("pause","yes"); }
@@ -1169,7 +1426,7 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
     case WM_SYSKEYDOWN:
         if (wParam==VK_RETURN) { toggleFullscreen(); return 0; }
         if (wParam=='F' || wParam=='P' || wParam=='V' || wParam=='A' || wParam=='S') {
-            POINT point{static_cast<LONG>(175*dpi_),static_cast<LONG>(57*dpi_)}; ClientToScreen(window_,&point);
+            POINT point{static_cast<LONG>(8*dpi_),static_cast<LONG>(topBarHeight*dpi_)}; ClientToScreen(window_,&point);
             showMenu(wParam=='F'?FileMenu:wParam=='P'?PlaybackMenu:wParam=='V'?VideoMenu:wParam=='A'?AudioMenu:SubtitleMenu,point);
             return 0;
         }
@@ -1298,30 +1555,32 @@ bool PlayerWindow::constrainWindowSizing(WPARAM edge,RECT& bounds) const {
     AdjustWindowRectExForDpi(&frame,static_cast<DWORD>(GetWindowLongPtrW(window_,GWL_STYLE)),FALSE,
                              static_cast<DWORD>(GetWindowLongPtrW(window_,GWL_EXSTYLE)),GetDpiForWindow(window_));
     const double frameWidth=frame.right-frame.left,frameHeight=frame.bottom-frame.top;
+    // The video fills the client area beside the sidebar; the remaining chrome floats above it.
     const double side=std::clamp(static_cast<double>(preferences_.sidebarWidth),240.,640.);
-    const double chromeX=2.*gutter,chromeY=static_cast<double>(stageTop)+dockHeight;
+    const double minWidth=static_cast<double>(minWindowWidth)*dpi_,minHeight=static_cast<double>(minWindowHeight)*dpi_;
     double width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;
     const bool vertical=edge==WMSZ_TOP || edge==WMSZ_BOTTOM;
     // The sidebar disappears below its layout threshold, so resolve its width
     // from the candidate window rather than the previous window size.
-    double sidebar=showPlaylist_ && (width-frameWidth)/dpi_>=side+sidebarThreshold ? side*dpi_ : 0.;
+    const auto sidebarFor=[&](double candidate) { return showPlaylist_ && (candidate-frameWidth)/dpi_>=side+sidebarThreshold ? side*dpi_ : 0.; };
+    double sidebar=sidebarFor(width);
     if (vertical) {
-        height=std::max(height,500.*dpi_);
-        width=(height-frameHeight-chromeY*dpi_)*ratio+frameWidth+chromeX*dpi_+sidebar;
-        sidebar=showPlaylist_ && (width-frameWidth)/dpi_>=side+sidebarThreshold ? side*dpi_ : 0.;
-        width=(height-frameHeight-chromeY*dpi_)*ratio+frameWidth+chromeX*dpi_+sidebar;
+        height=std::max(height,minHeight);
+        width=(height-frameHeight)*ratio+frameWidth+sidebar;
+        sidebar=sidebarFor(width);
+        width=(height-frameHeight)*ratio+frameWidth+sidebar;
     } else {
-        width=std::max(width,740.*dpi_);
-        height=(width-frameWidth-chromeX*dpi_-sidebar)/ratio+frameHeight+chromeY*dpi_;
+        width=std::max(width,minWidth);
+        height=(width-frameWidth-sidebar)/ratio+frameHeight;
     }
-    if (height<500.*dpi_) {
-        height=500.*dpi_;
-        width=(height-frameHeight-chromeY*dpi_)*ratio+frameWidth+chromeX*dpi_+sidebar;
+    if (height<minHeight) {
+        height=minHeight;
+        width=(height-frameHeight)*ratio+frameWidth+sidebar;
     }
-    if (width<740.*dpi_) {
-        width=740.*dpi_;
-        sidebar=showPlaylist_ && (width-frameWidth)/dpi_>=side+sidebarThreshold ? side*dpi_ : 0.;
-        height=(width-frameWidth-chromeX*dpi_-sidebar)/ratio+frameHeight+chromeY*dpi_;
+    if (width<minWidth) {
+        width=minWidth;
+        sidebar=sidebarFor(width);
+        height=(width-frameWidth-sidebar)/ratio+frameHeight;
     }
     const LONG w=static_cast<LONG>(std::lround(width)),h=static_cast<LONG>(std::lround(height));
     if (edge==WMSZ_LEFT || edge==WMSZ_TOPLEFT || edge==WMSZ_BOTTOMLEFT) bounds.left=bounds.right-w;
@@ -1341,21 +1600,20 @@ void PlayerWindow::resizeForVideo(double scale,bool fitScreen) {
     AdjustWindowRectExForDpi(&frame,static_cast<DWORD>(GetWindowLongPtrW(window_,GWL_STYLE)),FALSE,
                              static_cast<DWORD>(GetWindowLongPtrW(window_,GWL_EXSTYLE)),GetDpiForWindow(window_));
     const double frameWidth=frame.right-frame.left,frameHeight=frame.bottom-frame.top;
+    // The video fills the client area beside the sidebar; the remaining chrome floats above it.
     const double side=std::clamp(static_cast<double>(preferences_.sidebarWidth),240.,640.);
     const double sidePx=showPlaylist_ ? side*dpi_ : 0.;
-    const double chromeX=2.*gutter,chromeY=static_cast<double>(stageTop)+dockHeight;
     MONITORINFO monitor{sizeof(monitor)};
     GetMonitorInfoW(MonitorFromWindow(window_,MONITOR_DEFAULTTONEAREST),&monitor);
     const double availableWidth=monitor.rcWork.right-monitor.rcWork.left;
     const double availableHeight=monitor.rcWork.bottom-monitor.rcWork.top;
-    if (fitScreen) scale=std::min((availableWidth-frameWidth-chromeX*dpi_-sidePx)/videoWidth,
-                                  (availableHeight-frameHeight-chromeY*dpi_)/videoHeight);
-    const double minScale=std::max((740.*dpi_-frameWidth-chromeX*dpi_)/videoWidth,
-                                   (500.*dpi_-frameHeight-chromeY*dpi_)/videoHeight);
+    if (fitScreen) scale=std::min((availableWidth-frameWidth-sidePx)/videoWidth,(availableHeight-frameHeight)/videoHeight);
+    const double minScale=std::max((static_cast<double>(minWindowWidth)*dpi_-frameWidth)/videoWidth,
+                                   (static_cast<double>(minWindowHeight)*dpi_-frameHeight)/videoHeight);
     scale=std::max(scale,minScale);
-    double sidebar=showPlaylist_ && (videoWidth*scale+chromeX*dpi_)/dpi_>=sidebarThreshold ? sidePx : 0.;
-    int width=static_cast<int>(std::lround(videoWidth*scale+frameWidth+chromeX*dpi_+sidebar));
-    int height=static_cast<int>(std::lround(videoHeight*scale+frameHeight+chromeY*dpi_));
+    const double sidebar=showPlaylist_ && videoWidth*scale/dpi_>=sidebarThreshold ? sidePx : 0.;
+    int width=static_cast<int>(std::lround(videoWidth*scale+frameWidth+sidebar));
+    int height=static_cast<int>(std::lround(videoHeight*scale+frameHeight));
     RECT old{}; GetWindowRect(window_,&old);
     const int left=std::clamp(static_cast<int>((old.left+old.right-width)/2),static_cast<int>(monitor.rcWork.left),std::max(static_cast<int>(monitor.rcWork.left),static_cast<int>(monitor.rcWork.right)-width));
     const int top=std::clamp(static_cast<int>((old.top+old.bottom-height)/2),static_cast<int>(monitor.rcWork.top),std::max(static_cast<int>(monitor.rcWork.top),static_cast<int>(monitor.rcWork.bottom)-height));

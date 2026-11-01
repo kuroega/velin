@@ -332,7 +332,7 @@ const std::vector<Binding>& bindings() {
     BOOL(pipPauseOnClose, "Pause when picture in picture closes", "Interface");
     BOOL(showChapterMarkers, "Show chapter markers on the timeline", "Interface");
     BOOL(showTimelineThumbnails, "Show video thumbnails when seeking", "Interface");
-    BOOL(fullscreenAutoHide, "Hide controls automatically in fullscreen", "Interface");
+    BOOL(fullscreenAutoHide, "Hide controls automatically during playback", "Interface");
     NUM(controlsHideSeconds, "Control hide delay (seconds)", "Interface", .25, 60);
     NUM(seekSeconds, "Arrow-key seek amount (seconds)", "Interface", .1, 600);
     NUM(volumeStep, "Volume step", "Interface", 1, 50);

@@ -11,6 +11,7 @@
 #include "velin/tool_windows.hpp"
 #include <windows.h>
 #include <d2d1.h>
+#include <array>
 #include <dwrite.h>
 #include <filesystem>
 #include <string>
@@ -56,14 +57,30 @@ private:
         CropAspectBase=11000, WindowSizeBase=12000, ToggleWindowAspectLock=12010
     };
     struct Hit { D2D1_RECT_F rect; int action; int data; std::wstring hint; };
-    // Layout metrics in device-independent pixels. Window sizing and plugin
-    // view placement derive from these, so the chrome stays consistent.
-    static constexpr float gutter = 20, stageTop = 64, dockHeight = 128;
-    static constexpr float sidebarGap = 16, sidebarThreshold = 534;
+    // Layout metrics in device-independent pixels. The video fills the client
+    // area beside the docked sidebar; the top bar, controller, notices and
+    // tooltips float above it in layered overlay windows (see Layer).
+    static constexpr float topBarHeight = 38, sidebarThreshold = 360;
+    static constexpr float minWindowWidth = 560, minWindowHeight = 360;
+    // Each overlay is an owned, per-pixel-alpha popup aligned to the client
+    // area. Transparent pixels let input fall through to the video beneath.
+    enum LayerId { TopBarLayer, ControlLayer, NoticeLayer, TooltipLayer, LayerCount };
+    struct Layer {
+        HWND window{};
+        HDC dc{};
+        HBITMAP bitmap{};
+        HGDIOBJ previous{};
+        ID2D1DCRenderTarget* target{};
+        ID2D1SolidColorBrush* brush{};
+        int left = 0, top = 0, width = 0, height = 0;
+        float dpi = 0;
+        bool shown = false;
+    };
     static constexpr UINT engineMessage = WM_APP + 1;
     static constexpr UINT thumbnailMessage = WM_APP + 10;
     static LRESULT CALLBACK windowProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK videoProc(HWND, UINT, WPARAM, LPARAM);
+    static LRESULT CALLBACK overlayProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT handleMessage(UINT, WPARAM, LPARAM);
     void createResources();
     void discardTarget();
@@ -108,7 +125,26 @@ private:
     int hitAt(float x, float y) const;
     D2D1_RECT_F videoRect() const;
     D2D1_RECT_F sidebarRect() const;
+    D2D1_RECT_F controlRect() const;
     float sidebarWidth() const;
+    bool sidebarShown() const;
+    bool chromeShown() const;
+    bool beginLayer(LayerId id, D2D1_RECT_F bounds);
+    void endLayer(LayerId id);
+    void hideLayer(LayerId id);
+    void moveLayers();
+    void releaseLayers();
+    bool isLayerWindow(HWND window) const;
+    bool pointerOverChrome() const;
+    void drawTopBar();
+    void drawControls();
+    void drawSidebar();
+    void drawWelcome(D2D1_RECT_F area);
+    void drawNowPlaying(D2D1_RECT_F area);
+    void drawNotice(D2D1_RECT_F bounds);
+    void drawTooltip(D2D1_RECT_F bounds, std::wstring_view tip);
+    void hud(D2D1_RECT_F rect, float radius, bool shadow = true);
+    void slider(int action, D2D1_RECT_F track, double fraction, std::wstring hint);
     void fill(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 0);
     void outline(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 0, float width = 1);
     void gradient(D2D1_RECT_F rect, D2D1_COLOR_F from, D2D1_COLOR_F to, float radius = 0, bool horizontal = false);
@@ -119,7 +155,6 @@ private:
               DWRITE_TEXT_ALIGNMENT alignment = DWRITE_TEXT_ALIGNMENT_LEADING);
     IDWriteTextFormat* textFormat(float size, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT alignment);
     float textWidth(std::wstring_view value, float size, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL);
-    void playButton(D2D1_RECT_F rect, std::wstring hint);
     void icon(int action, D2D1_RECT_F rect, D2D1_COLOR_F color);
     void button(int action, D2D1_RECT_F rect, std::wstring_view label,
                 std::wstring hint, bool primary = false, int data = 0);
@@ -131,9 +166,16 @@ private:
     IDWriteFactory* writeFactory_{};
     ID2D1HwndRenderTarget* target_{};
     ID2D1SolidColorBrush* brush_{};
+    // The surface and brush the drawing helpers currently paint with: the
+    // main window target, or the overlay layer being rendered.
+    ID2D1RenderTarget* canvas_{};
+    ID2D1SolidColorBrush* paint_{};
     ID2D1StrokeStyle* roundStroke_{};
+    std::array<Layer, LayerCount> layers_{};
+    HWND pointerWindow_{};
+    COLORREF captionColor_ = CLR_INVALID;
     std::wstring textFamily_, displayFamily_;
-    D2D1_RECT_F seekTrack_{}, volumeTrack_{};
+    D2D1_RECT_F seekTrack_{}, volumeTrack_{}, controlBounds_{};
     MediaEngine engine_;
     SettingsStore settings_;
     Preferences preferences_;
