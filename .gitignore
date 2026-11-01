@@ -8,3 +8,5 @@
 *.suo
 *.zip
 compile_commands.json
+
+local_mac_dev.env
