@@ -56,6 +56,10 @@ private:
         CropAspectBase=11000, WindowSizeBase=12000, ToggleWindowAspectLock=12010
     };
     struct Hit { D2D1_RECT_F rect; int action; int data; std::wstring hint; };
+    // Layout metrics in device-independent pixels. Window sizing and plugin
+    // view placement derive from these, so the chrome stays consistent.
+    static constexpr float gutter = 20, stageTop = 64, dockHeight = 128;
+    static constexpr float sidebarGap = 16, sidebarThreshold = 534;
     static constexpr UINT engineMessage = WM_APP + 1;
     static constexpr UINT thumbnailMessage = WM_APP + 10;
     static LRESULT CALLBACK windowProc(HWND, UINT, WPARAM, LPARAM);
@@ -103,12 +107,19 @@ private:
     void updatePointer(float x, float y, bool commit);
     int hitAt(float x, float y) const;
     D2D1_RECT_F videoRect() const;
+    D2D1_RECT_F sidebarRect() const;
     float sidebarWidth() const;
     void fill(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 0);
+    void outline(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 0, float width = 1);
+    void gradient(D2D1_RECT_F rect, D2D1_COLOR_F from, D2D1_COLOR_F to, float radius = 0, bool horizontal = false);
+    void circle(float cx, float cy, float radius, D2D1_COLOR_F color);
     void line(float x1, float y1, float x2, float y2, D2D1_COLOR_F color, float width = 1);
     void text(std::wstring_view value, D2D1_RECT_F rect, float size,
-              D2D1_COLOR_F color, bool bold = false,
+              D2D1_COLOR_F color, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL,
               DWRITE_TEXT_ALIGNMENT alignment = DWRITE_TEXT_ALIGNMENT_LEADING);
+    IDWriteTextFormat* textFormat(float size, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT alignment);
+    float textWidth(std::wstring_view value, float size, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL);
+    void playButton(D2D1_RECT_F rect, std::wstring hint);
     void icon(int action, D2D1_RECT_F rect, D2D1_COLOR_F color);
     void button(int action, D2D1_RECT_F rect, std::wstring_view label,
                 std::wstring hint, bool primary = false, int data = 0);
@@ -120,6 +131,9 @@ private:
     IDWriteFactory* writeFactory_{};
     ID2D1HwndRenderTarget* target_{};
     ID2D1SolidColorBrush* brush_{};
+    ID2D1StrokeStyle* roundStroke_{};
+    std::wstring textFamily_, displayFamily_;
+    D2D1_RECT_F seekTrack_{}, volumeTrack_{};
     MediaEngine engine_;
     SettingsStore settings_;
     Preferences preferences_;
@@ -140,7 +154,7 @@ private:
     std::jthread ocrWorker_;
     std::mutex ocrMutex_;
     std::optional<TextRecognitionResult> ocrResult_;
-    std::map<std::tuple<int,bool,int>,IDWriteTextFormat*> textFormats_;
+    std::map<std::tuple<int,int,int>,IDWriteTextFormat*> textFormats_;
     std::filesystem::path dataDirectory_;
     std::map<std::uint64_t,std::function<void(const ServiceResult&)>> serviceCallbacks_;
     std::vector<Hit> hits_;

@@ -9,6 +9,8 @@
 #include <optional>
 
 namespace velin {
+// The system message font (Segoe UI) at the window's DPI, cached per DPI.
+HFONT dialogFont(HWND window);
 std::optional<std::wstring> showTextPrompt(HWND owner,std::wstring title,std::wstring label,
     std::wstring value={},bool multiline=false);
 std::optional<size_t> chooseListItem(HWND owner,std::wstring title,

@@ -4,6 +4,7 @@
 #include "velin/library.hpp"
 #include "nlohmann/json.hpp"
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <windowsx.h>
@@ -13,10 +14,25 @@
 #include <cwctype>
 #include <functional>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
 namespace velin {
+HFONT dialogFont(HWND window) {
+    // The stock GUI font is a bitmap-era face that ignores DPI; the message
+    // font from the system metrics is the one Windows itself uses in dialogs.
+    static std::map<UINT,HFONT> fonts;
+    const UINT dpi=window?GetDpiForWindow(window):96;
+    if (auto found=fonts.find(dpi);found!=fonts.end()) return found->second;
+    NONCLIENTMETRICSW metrics{}; metrics.cbSize=sizeof(metrics);
+    HFONT font=nullptr;
+    if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS,sizeof(metrics),&metrics,0,dpi)) font=CreateFontIndirectW(&metrics.lfMessageFont);
+    if (!font) return static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    fonts.emplace(dpi,font);
+    return font;
+}
+
 namespace {
 struct ModalWindow {
     HWND window=nullptr;
@@ -63,7 +79,7 @@ HWND control(HWND parent,const wchar_t* type,const std::wstring& text,DWORD styl
         type,text.c_str(),WS_CHILD|WS_VISIBLE|style,static_cast<int>(x*scale),static_cast<int>(y*scale),
         static_cast<int>(w*scale),static_cast<int>(h*scale),parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
         GetModuleHandleW(nullptr),nullptr);
-    SendMessageW(result,WM_SETFONT,reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)),TRUE);
+    SendMessageW(result,WM_SETFONT,reinterpret_cast<WPARAM>(dialogFont(parent)),TRUE);
     return result;
 }
 std::wstring value(HWND edit) {
@@ -267,10 +283,13 @@ std::optional<VideoCrop> selectVideoCrop(HWND owner,RECT bounds,int sourceWidth,
                 if (message==WM_KEYDOWN && wparam==VK_ESCAPE) { self->done=true; return 0; }
                 if (message==WM_PAINT) {
                     PAINTSTRUCT paint{}; HDC dc=BeginPaint(window,&paint); RECT rect{}; GetClientRect(window,&rect);
-                    HBRUSH background=CreateSolidBrush(RGB(16,17,22)); FillRect(dc,&rect,background); DeleteObject(background);
-                    SetTextColor(dc,RGB(255,255,255)); SetBkMode(dc,TRANSPARENT);
-                    DrawTextW(dc,L"Drag to crop the video. Press Esc to cancel.",-1,&rect,DT_CENTER|DT_TOP|DT_SINGLELINE);
-                    HPEN pen=CreatePen(PS_SOLID,3,RGB(194,175,255)); HGDIOBJ oldPen=SelectObject(dc,pen),oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+                    HBRUSH background=CreateSolidBrush(RGB(12,13,17)); FillRect(dc,&rect,background); DeleteObject(background);
+                    SetTextColor(dc,RGB(243,242,248)); SetBkMode(dc,TRANSPARENT);
+                    const HGDIOBJ oldFont=SelectObject(dc,dialogFont(window));
+                    RECT hint=rect; hint.top+=MulDiv(12,static_cast<int>(GetDpiForWindow(window)),96);
+                    DrawTextW(dc,L"Drag to crop the video. Press Esc to cancel.",-1,&hint,DT_CENTER|DT_TOP|DT_SINGLELINE);
+                    SelectObject(dc,oldFont);
+                    HPEN pen=CreatePen(PS_SOLID,2,RGB(183,164,255)); HGDIOBJ oldPen=SelectObject(dc,pen),oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
                     Rectangle(dc,std::min(self->first.x,self->last.x),std::min(self->first.y,self->last.y),std::max(self->first.x,self->last.x),std::max(self->first.y,self->last.y));
                     SelectObject(dc,oldBrush); SelectObject(dc,oldPen); DeleteObject(pen); EndPaint(window,&paint); return 0;
                 }
@@ -531,20 +550,27 @@ void showLogViewer(HWND owner,const std::vector<std::string>& lines) {
 struct ThumbnailPopup::Impl {
     HWND window=nullptr;
     TimelineThumbnail thumbnail;
+    HFONT font=nullptr;
+    UINT fontDpi=0;
+    int inset=4,caption=26;
+    ~Impl() { if (font) DeleteObject(font); }
     static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wparam,LPARAM lparam) {
         auto* self=reinterpret_cast<Impl*>(GetWindowLongPtrW(window,GWLP_USERDATA));
         if (message==WM_NCCREATE) { self=static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams); SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self)); }
         if (self && message==WM_PAINT) {
             PAINTSTRUCT paint{}; HDC dc=BeginPaint(window,&paint); RECT client{}; GetClientRect(window,&client);
-            HBRUSH brush=CreateSolidBrush(RGB(23,25,32)); FillRect(dc,&client,brush); DeleteObject(brush);
+            HBRUSH brush=CreateSolidBrush(RGB(20,21,27)); FillRect(dc,&client,brush); DeleteObject(brush);
+            const int inset=self->inset,caption=self->caption;
             const auto& frame=self->thumbnail;
             if (!frame.bgra.empty()) {
                 BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(info.bmiHeader); info.bmiHeader.biWidth=static_cast<LONG>(frame.width);
                 info.bmiHeader.biHeight=-static_cast<LONG>(frame.height); info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32; info.bmiHeader.biCompression=BI_RGB;
-                SetStretchBltMode(dc,HALFTONE); StretchDIBits(dc,1,1,client.right-2,client.bottom-29,0,0,static_cast<int>(frame.width),static_cast<int>(frame.height),frame.bgra.data(),&info,DIB_RGB_COLORS,SRCCOPY);
+                SetStretchBltMode(dc,HALFTONE); StretchDIBits(dc,inset,inset,client.right-2*inset,client.bottom-inset-caption,0,0,static_cast<int>(frame.width),static_cast<int>(frame.height),frame.bgra.data(),&info,DIB_RGB_COLORS,SRCCOPY);
             }
-            RECT caption{0,client.bottom-28,client.right,client.bottom}; SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(241,240,247));
-            const auto time=fromUtf8(formatTime(frame.seconds)); DrawTextW(dc,time.c_str(),-1,&caption,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            RECT label{0,client.bottom-caption,client.right,client.bottom}; SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(243,242,248));
+            const HGDIOBJ previous=self->font?SelectObject(dc,self->font):nullptr;
+            const auto time=fromUtf8(formatTime(frame.seconds)); DrawTextW(dc,time.c_str(),-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            if (previous) SelectObject(dc,previous);
             EndPaint(window,&paint); return 0;
         }
         if (message==WM_NCHITTEST) return HTTRANSPARENT;
@@ -558,9 +584,22 @@ void ThumbnailPopup::show(HWND owner,const TimelineThumbnail& frame,POINT anchor
     if (!impl_->window) {
         WNDCLASSW type{}; type.hInstance=GetModuleHandleW(nullptr); type.lpfnWndProc=Impl::procedure; type.lpszClassName=L"Velin.TimelinePreview"; RegisterClassW(&type);
         impl_->window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT,type.lpszClassName,L"Timeline preview",WS_POPUP,0,0,1,1,owner,nullptr,type.hInstance,impl_.get());
+        if (impl_->window) {
+            // Windows 11 rounds the popup and draws a hairline border; older systems ignore both.
+            const DWORD corners=2; DwmSetWindowAttribute(impl_->window,33,&corners,sizeof(corners));
+            const COLORREF border=RGB(48,49,60); DwmSetWindowAttribute(impl_->window,34,&border,sizeof(border));
+        }
+    }
+    if (const UINT dpi=GetDpiForWindow(owner);dpi!=impl_->fontDpi) {
+        if (impl_->font) DeleteObject(impl_->font);
+        impl_->font=CreateFontW(-MulDiv(9,static_cast<int>(dpi),72),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+        impl_->fontDpi=dpi;
     }
     impl_->thumbnail=frame;
-    const double scale=GetDpiForWindow(owner)/96.; const int width=static_cast<int>(frame.width*scale),height=static_cast<int>(frame.height*scale)+28;
+    const double scale=GetDpiForWindow(owner)/96.;
+    impl_->inset=static_cast<int>(4*scale); impl_->caption=static_cast<int>(26*scale);
+    const int width=static_cast<int>(frame.width*scale)+2*impl_->inset,height=static_cast<int>(frame.height*scale)+impl_->inset+impl_->caption;
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor); GetMonitorInfoW(MonitorFromPoint(anchor,MONITOR_DEFAULTTONEAREST),&monitor);
     SetWindowPos(impl_->window,HWND_TOP,std::clamp(static_cast<int>(anchor.x)-width/2,static_cast<int>(monitor.rcWork.left),std::max(static_cast<int>(monitor.rcWork.left),static_cast<int>(monitor.rcWork.right)-width)),
         std::max(static_cast<int>(monitor.rcWork.top),static_cast<int>(anchor.y)-height-12),width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);

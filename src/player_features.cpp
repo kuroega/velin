@@ -261,9 +261,9 @@ void PlayerWindow::updateWebViews() {
     POINT origin{}; ClientToScreen(window_,&origin); const auto video=videoRect();
     for (auto& [key,view]:webviews_) {
         const bool sidebar=key.ends_with(":sidebar");
-        const float left=sidebar?width_-std::max(240.f,sidebarWidth())-6:video.left;
-        const float right=sidebar?width_-24:video.right;
-        const float top=sidebar?76:video.top, bottom=sidebar?height_-146:video.bottom;
+        const float left=sidebar?width_-gutter-std::max(240.f,sidebarWidth())+sidebarGap:video.left;
+        const float right=sidebar?width_-gutter:video.right;
+        const float top=sidebar?stageTop:video.top, bottom=sidebar?height_-dockHeight:video.bottom;
         view->setBounds({origin.x+static_cast<LONG>(left*dpi_),origin.y+static_cast<LONG>(top*dpi_),
             origin.x+static_cast<LONG>(right*dpi_),origin.y+static_cast<LONG>(bottom*dpi_)});
     }
