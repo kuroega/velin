@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Velin</title>
+  <rect x="8" y="8" width="240" height="240" rx="60" fill="#c2afff"/>
+  <path d="M70 80 126 178 187 78" fill="none" stroke="#211f2d" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

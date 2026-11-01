@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Open in Velin",
+  "version": "0.2.0",
+  "description": "Open media links in the Velin Windows player.",
+  "permissions": ["contextMenus", "activeTab"],
+  "background": { "scripts": ["background.js"] },
+  "action": { "default_popup": "popup.html" },
+  "browser_specific_settings": { "gecko": { "id": "open-in-velin@velin.local" } }
+}

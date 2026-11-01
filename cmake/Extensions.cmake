@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+enable_language(C)
+set(_velin_qjs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/quickjs")
+add_library(velin_quickjs STATIC
+    "${_velin_qjs}/cutils.c" "${_velin_qjs}/dtoa.c" "${_velin_qjs}/libregexp.c"
+    "${_velin_qjs}/libunicode.c" "${_velin_qjs}/quickjs.c")
+set_target_properties(velin_quickjs PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_include_directories(velin_quickjs SYSTEM PUBLIC "${_velin_qjs}")
+target_compile_definitions(velin_quickjs PRIVATE _GNU_SOURCE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+if(MSVC)
+    target_compile_options(velin_quickjs PRIVATE /experimental:c11atomics /wd4244 /wd4267 /wd4996)
+endif()
+add_library(velin_miniz STATIC third_party/miniz/miniz.c third_party/miniz/miniz_zip.c
+    third_party/miniz/miniz_tinfl.c third_party/miniz/miniz_tdef.c)
+target_include_directories(velin_miniz SYSTEM PUBLIC third_party/miniz)
+target_compile_definitions(velin_miniz PRIVATE MINIZ_NO_STDIO)
+add_library(velin_extensions STATIC src/extensions.cpp src/plugin_websocket.cpp)
+target_include_directories(velin_extensions PUBLIC include third_party)
+target_link_libraries(velin_extensions PUBLIC velin_engine velin_core velin_options
+    PRIVATE velin_quickjs velin_miniz winhttp bcrypt shell32 ole32 ws2_32 crypt32 advapi32)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/extensions_tests.cpp")
+    add_executable(velin_websocket_tests tests/websocket_tests.cpp)
+    target_link_libraries(velin_websocket_tests PRIVATE velin_extensions ws2_32)
+    velin_portable_runtime(velin_websocket_tests)
+    add_test(NAME websocket COMMAND velin_websocket_tests)
+    set_tests_properties(websocket PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(velin_extensions_tests tests/extensions_tests.cpp)
+    target_link_libraries(velin_extensions_tests PRIVATE velin_extensions)
+    velin_portable_runtime(velin_extensions_tests)
+    add_test(NAME extensions COMMAND velin_extensions_tests)
+endif()

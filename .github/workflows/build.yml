@@ -1,0 +1,64 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [msvc-release, mingw-release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch hash-pinned playback runtime
+        shell: pwsh
+        run: |
+          ./scripts/Get-Mpv.ps1
+          ./scripts/Get-Helpers.ps1
+          ./scripts/Get-WebView2.ps1
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+      - name: Test core behavior
+        run: ctest --preset ${{ matrix.preset }}
+      - name: Real playback integration
+        shell: pwsh
+        run: |
+          ./scripts/Test-Playback.ps1 -BuildDirectory build/${{ matrix.preset }} -FFmpeg "$PWD/runtime/ffmpeg.exe" -Headless
+      - name: Native GUI regression
+        shell: pwsh
+        run: |
+          $exe = "build/${{ matrix.preset }}/velin.exe"
+          if ('${{ matrix.preset }}' -eq 'msvc-release') { $exe = "build/msvc-release/Release/velin.exe" }
+          $media = Get-ChildItem .cache/playback-fixtures -Filter '*chaptered.mkv' | Select-Object -First 1
+          ./scripts/Test-Gui.ps1 -Executable $exe -MediaPath $media.FullName
+      - name: Relative launch and forwarding regression
+        shell: powershell
+        run: ./scripts/Test-LaunchPaths.ps1 -BuildDirectory build/${{ matrix.preset }}
+      - name: Isolated update regression (Windows PowerShell)
+        shell: powershell
+        run: ./scripts/Test-Update.ps1
+      - name: Isolated update regression (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/Test-Update.ps1
+      - name: Plugin windows and HTTP contracts
+        shell: pwsh
+        run: |
+          $exe = "build/${{ matrix.preset }}/velin.exe"
+          if ('${{ matrix.preset }}' -eq 'msvc-release') { $exe = "build/msvc-release/Release/velin.exe" }
+          ./scripts/Test-Extensions.ps1 -BuildDirectory build/${{ matrix.preset }}
+          ./scripts/Test-PluginWindows.ps1 -Executable $exe
+      - name: Package portable player
+        working-directory: build/${{ matrix.preset }}
+        run: cpack -C Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Velin-windows-x64-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/Velin-*-windows-x64.zip

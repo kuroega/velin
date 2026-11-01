@@ -1,0 +1,10 @@
+/build/
+/out/
+/runtime/
+/.cache/
+/.vs/
+/_CPack_Packages/
+*.user
+*.suo
+*.zip
+compile_commands.json
