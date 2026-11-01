@@ -974,12 +974,16 @@ void PlayerWindow::drawWelcome(D2D1_RECT_F area) {
     const float blockHeight=(compact?0.f:104.f)+60+3*38+28;
     float y=area.top+std::max(12.f,(h-blockHeight-(wide||recent.empty()||compact?0.f:150.f))/2);
     if (!compact) {
-        // Original geometric Velin mark; no IINA artwork is reused.
-        const auto tile=rect(cx-42,y,84,84);
-        gradient(tile,hex(0x6e6af0),hex(0x0a7cff),20);
-        outline(tile,D2D1::ColorF(1,1,1,.18f),20);
-        line(cx-17,y+31,cx,y+55,D2D1::ColorF(1,1,1),5.5f);
-        line(cx,y+55,cx+17,y+31,D2D1::ColorF(1,1,1),5.5f);
+        // The original Velin "Scan" mark, drawn from the 256-unit geometry of
+        // resources/velin.svg: scanlines whose lengths trace a play shape.
+        const float scale=84.f/256, originX=cx-42;
+        const auto lavender=hex(0x9d8cff), sky=hex(0x2fa7ff);
+        for (int i=0;i<9;++i) {
+            const float lineY=128+static_cast<float>(i-4)*19, right=42+170*(1-std::abs(lineY-128)/90);
+            const float t=static_cast<float>(i)/8;
+            const D2D1_COLOR_F tint{lavender.r+(sky.r-lavender.r)*t,lavender.g+(sky.g-lavender.g)*t,lavender.b+(sky.b-lavender.b)*t,1};
+            gradient(rect(originX+36*scale,y+(lineY-6)*scale,(right-30)*scale,12*scale),hex(0x4b47e8),tint,6*scale,true);
+        }
         y+=104;
     }
     text(L"Velin",rect(area.left+16,y,column-32,34),26,ui.text,semibold,centered);

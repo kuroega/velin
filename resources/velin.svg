@@ -1,5 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <title>Velin</title>
-  <rect x="8" y="8" width="240" height="240" rx="60" fill="#c2afff"/>
-  <path d="M70 80 126 178 187 78" fill="none" stroke="#211f2d" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="line1" gradientUnits="userSpaceOnUse" x1="36" x2="74.4" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#9d8cff"/></linearGradient>
+    <linearGradient id="line2" gradientUnits="userSpaceOnUse" x1="36" x2="110.3" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#8f8fff"/></linearGradient>
+    <linearGradient id="line3" gradientUnits="userSpaceOnUse" x1="36" x2="146.2" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#8293ff"/></linearGradient>
+    <linearGradient id="line4" gradientUnits="userSpaceOnUse" x1="36" x2="182.1" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#7496ff"/></linearGradient>
+    <linearGradient id="line5" gradientUnits="userSpaceOnUse" x1="36" x2="218.0" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#669aff"/></linearGradient>
+    <linearGradient id="line6" gradientUnits="userSpaceOnUse" x1="36" x2="182.1" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#589dff"/></linearGradient>
+    <linearGradient id="line7" gradientUnits="userSpaceOnUse" x1="36" x2="146.2" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#4aa0ff"/></linearGradient>
+    <linearGradient id="line8" gradientUnits="userSpaceOnUse" x1="36" x2="110.3" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#3da4ff"/></linearGradient>
+    <linearGradient id="line9" gradientUnits="userSpaceOnUse" x1="36" x2="74.4" y1="0" y2="0"><stop offset="0" stop-color="#4b47e8"/><stop offset="1" stop-color="#2fa7ff"/></linearGradient>
+  </defs>
+  <rect x="36" y="46" width="38.4" height="12" rx="6" fill="url(#line1)"/>
+  <rect x="36" y="65" width="74.3" height="12" rx="6" fill="url(#line2)"/>
+  <rect x="36" y="84" width="110.2" height="12" rx="6" fill="url(#line3)"/>
+  <rect x="36" y="103" width="146.1" height="12" rx="6" fill="url(#line4)"/>
+  <rect x="36" y="122" width="182.0" height="12" rx="6" fill="url(#line5)"/>
+  <rect x="36" y="141" width="146.1" height="12" rx="6" fill="url(#line6)"/>
+  <rect x="36" y="160" width="110.2" height="12" rx="6" fill="url(#line7)"/>
+  <rect x="36" y="179" width="74.3" height="12" rx="6" fill="url(#line8)"/>
+  <rect x="36" y="198" width="38.4" height="12" rx="6" fill="url(#line9)"/>
 </svg>
