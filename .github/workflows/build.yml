@@ -19,6 +19,20 @@ jobs:
         preset: [msvc-release, mingw-release]
     steps:
       - uses: actions/checkout@v4
+      # The runner's preinstalled MinGW (GCC 14) lacks the media timeline
+      # interfaces platform.cpp uses, so build with MSYS2's UCRT64 toolchain.
+      - name: Install MinGW toolchain
+        if: matrix.preset == 'mingw-release'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja
+      - name: Use MinGW toolchain
+        if: matrix.preset == 'mingw-release'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
       - name: Fetch hash-pinned playback runtime
         shell: pwsh
         run: |
