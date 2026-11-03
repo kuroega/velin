@@ -32,14 +32,11 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-vulkan-loader
             ${{ matrix.preset == 'mingw-release' && 'mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja' || '' }}
-      - name: Use the Vulkan loader
+      - name: Install the Vulkan loader
         shell: pwsh
-        run: |
-          # FFmpeg and libmpv both import it, from wherever the tests run them.
-          $loader = Join-Path $env:RUNNER_TEMP 'vulkan-loader'
-          New-Item -ItemType Directory -Force -Path $loader | Out-Null
-          Copy-Item "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\vulkan-1.dll" $loader
-          Add-Content -Path $env:GITHUB_PATH -Value $loader
+        # GPU drivers put it in System32, the one place both FFmpeg and libmpv
+        # (loaded with LOAD_LIBRARY_SEARCH_SYSTEM32) look for it.
+        run: Copy-Item "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\vulkan-1.dll" "$env:SystemRoot\System32"
       - name: Use MinGW toolchain
         if: matrix.preset == 'mingw-release'
         shell: pwsh
