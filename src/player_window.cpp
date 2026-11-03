@@ -1528,12 +1528,12 @@ void PlayerWindow::toggleFullscreen() {
         SetWindowLongPtrW(window_,GWL_STYLE,GetWindowLongPtrW(window_,GWL_STYLE)&~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW));
         SetWindowPos(window_,HWND_TOP,monitor.rcMonitor.left,monitor.rcMonitor.top,
             monitor.rcMonitor.right-monitor.rcMonitor.left,monitor.rcMonitor.bottom-monitor.rcMonitor.top,
-            SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+            SWP_FRAMECHANGED);
     } else {
         SetWindowLongPtrW(window_,GWL_STYLE,GetWindowLongPtrW(window_,GWL_STYLE)|WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(window_,&placement_);
         SetWindowPos(window_,preferences_.alwaysOnTop?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+            SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
     }
     layoutVideo(); InvalidateRect(window_,nullptr,FALSE);
 }
