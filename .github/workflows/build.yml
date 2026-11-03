@@ -21,14 +21,17 @@ jobs:
       - uses: actions/checkout@v4
       # The runner's preinstalled MinGW (GCC 14) lacks the media timeline
       # interfaces platform.cpp uses, so build with MSYS2's UCRT64 toolchain.
-      - name: Install MinGW toolchain
-        if: matrix.preset == 'mingw-release'
+      # Both jobs also need MSYS2's Vulkan loader: FFmpeg imports vulkan-1.dll,
+      # which GPU drivers normally provide and the runners lack.
+      - name: Install MSYS2 packages
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
-          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja
+          install: >-
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            ${{ matrix.preset == 'mingw-release' && 'mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja' || '' }}
       - name: Use MinGW toolchain
         if: matrix.preset == 'mingw-release'
         shell: pwsh
@@ -39,6 +42,7 @@ jobs:
           ./scripts/Get-Mpv.ps1
           ./scripts/Get-Helpers.ps1
           ./scripts/Get-WebView2.ps1
+          Copy-Item "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\vulkan-1.dll" runtime/
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
