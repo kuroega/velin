@@ -376,10 +376,14 @@ void PlatformIntegration::update(const PlatformPlayback& value) {
                 metadata->put_Title(HString(value.title)); metadata->put_Artist(HString(value.artist));
                 metadata->put_AlbumArtist(HString(value.album));
             }
-        } else {
+        }
+#ifdef _MSC_VER
+        // MinGW's windows.media.h only forward-declares IVideoDisplayProperties.
+        else {
             ComPtr<Media::IVideoDisplayProperties> metadata;
             if (SUCCEEDED(impl_->display->get_VideoProperties(metadata.put()))) metadata->put_Title(HString(value.title));
         }
+#endif
         impl_->display->Update(); impl_->lastTitle = value.title; impl_->lastArtist = value.artist; impl_->lastAlbum = value.album;
     }
     if (impl_->controls2 && impl_->timeline && std::isfinite(value.duration) && std::isfinite(value.position)) {
