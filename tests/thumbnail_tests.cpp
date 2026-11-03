@@ -3,8 +3,10 @@
 #include "velin/platform.hpp"
 #include "velin/core.hpp"
 #include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <thread>
 
@@ -40,13 +42,26 @@ int main(int argc, char** argv) {
         const auto helper = std::filesystem::absolute(argv[1]);
         const auto media = root / "fixture.mkv";
         auto command = velin::quoteWindowsArgument(helper.wstring()) + L" -nostdin -hide_banner -loglevel error -y -f lavfi -i color=c=red:s=320x180:r=2:d=4 -c:v ffv1 " + velin::quoteWindowsArgument(media.wstring());
+        // FFmpeg's stderr goes to a log so a failed fixture says why.
+        const auto log = root / "ffmpeg.log";
+        SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+        HANDLE logFile = CreateFileW(log.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        check(logFile != INVALID_HANDLE_VALUE, "Create FFmpeg log");
         STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION process{};
-        check(CreateProcessW(helper.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, root.c_str(), &startup, &process), "Create actual FFmpeg fixture");
+        startup.dwFlags = STARTF_USESTDHANDLES; startup.hStdOutput = logFile; startup.hStdError = logFile;
+        const bool created = CreateProcessW(helper.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, root.c_str(), &startup, &process);
+        CloseHandle(logFile);
+        check(created, "Create actual FFmpeg fixture");
         CloseHandle(process.hThread);
         const auto wait = WaitForSingleObject(process.hProcess, 15000);
         if (wait != WAIT_OBJECT_0) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 2000); }
         DWORD exitCode = 1; GetExitCodeProcess(process.hProcess, &exitCode); CloseHandle(process.hProcess);
-        check(wait == WAIT_OBJECT_0 && exitCode == 0, "Generate lossless video fixture");
+        if (wait != WAIT_OBJECT_0 || exitCode != 0) {
+            char code[16]{}; std::snprintf(code, sizeof(code), "0x%08lX", static_cast<unsigned long>(exitCode));
+            std::ifstream output(log, std::ios::binary);
+            const std::string detail{std::istreambuf_iterator<char>(output), std::istreambuf_iterator<char>()};
+            throw std::runtime_error(std::string("Generate lossless video fixture (exit ") + code + (wait != WAIT_OBJECT_0 ? ", timed out" : "") + "): " + detail);
+        }
         window = CreateWindowExW(0, L"STATIC", L"Thumbnail test", 0, 0, 0, 1, 1, HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
         check(window != nullptr, "Create notification window");
         {
