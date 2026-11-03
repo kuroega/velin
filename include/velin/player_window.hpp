@@ -51,7 +51,7 @@ private:
         RevealFile, TrashFile, OpenDisc, OpenClipboard, NewWindow, PluginManager, InstallPlugin,
         ReloadPlugins, PluginConsole, OnlineSubtitles, CheckUpdates, InstallUpdate, MediaLog,
         CopyScreenshot, RecognizeText, RegisterAssociations, UnregisterAssociations,
-        CustomCropAspect, JumpToBeginning, VideoFilters, AudioFilters,
+        CustomCropAspect, JumpToBeginning, VideoFilters, AudioFilters, OpenScreenshotFolder,
         SpeedBase = 1000, AudioBase = 2000, SubtitleBase = 3000,
         ChapterBase = 4000, RecentBase = 5000, AspectBase = 6000,
         PluginMenuBase=7000,AudioDeviceBase=8000,VideoTrackBase=9000,SecondarySubtitleBase=10000,
@@ -121,6 +121,7 @@ private:
     Json extensionUi(const PluginInfo& metadata,const std::string& operation,const Json& arguments);
     void savePreferences();
     void notice(const std::wstring& message, bool error = false);
+    std::filesystem::path screenshotDirectory() const;
     void keyDown(WPARAM key, bool released = false);
     void updatePointer(float x, float y, bool commit);
     int hitAt(float x, float y) const;

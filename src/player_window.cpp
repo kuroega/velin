@@ -1191,6 +1191,10 @@ void PlayerWindow::updatePointer(float x,float, bool commit) {
     InvalidateRect(window_,nullptr,FALSE);
 }
 
+std::filesystem::path PlayerWindow::screenshotDirectory() const {
+    return preferences_.screenshotDirectory.empty()?dataDirectory_/L"Screenshots":std::filesystem::path(fromUtf8(preferences_.screenshotDirectory));
+}
+
 void PlayerWindow::notice(const std::wstring& message,bool error) {
     notice_=message; noticeError_=error; noticeUntil_=GetTickCount64()+(error?12000:4500);
     InvalidateRect(window_,nullptr,FALSE);
@@ -1736,8 +1740,7 @@ void PlayerWindow::execute(int action,int data) {
         if (!state.idle) {
             engine_.command({"screenshot",preferences_.screenshotIncludeSubtitles?"subtitles":"video"});
             if(preferences_.screenshotCopyToClipboard)execute(CopyScreenshot);
-            const auto directory=preferences_.screenshotDirectory.empty()?dataDirectory_/L"Screenshots":std::filesystem::path(fromUtf8(preferences_.screenshotDirectory));
-            notice(L"Saving screenshot to "+directory.wstring());
+            notice(L"Saving screenshot to "+screenshotDirectory().wstring());
         }
         break;
     case PlayItem: engine_.selectPlaylist(data); break;
@@ -1802,6 +1805,13 @@ void PlayerWindow::execute(int action,int data) {
     case OpenSettings: {
         const auto directory=settingsDirectory();
         ShellExecuteW(window_,L"open",directory.c_str(),nullptr,nullptr,SW_SHOWNORMAL); break;
+    }
+    case OpenScreenshotFolder: {
+        const auto directory=screenshotDirectory();
+        std::error_code error; std::filesystem::create_directories(directory,error);
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_,L"open",directory.c_str(),nullptr,nullptr,SW_SHOWNORMAL))<=32)
+            notice(L"Could not open "+directory.wstring(),true);
+        break;
     }
     case ShowInfo: {
         std::wstring value=L"Title: "+fromUtf8(state.title)+L"\n\nSource: "+fromUtf8(state.path)+L"\n\nVideo: "+fromUtf8(state.videoCodec);
@@ -1878,7 +1888,7 @@ void PlayerWindow::showMenu(int action,POINT point) {
         else { AppendMenuW(recent,MF_SEPARATOR,0,nullptr); AppendMenuW(recent,MF_STRING,ClearHistory,L"Clear recent files"); }
         AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(recent),L"Recent files");
         separator(); item(ToggleResume,L"Remember playback position",preferences_.rememberPosition);
-        item(OpenSettings,L"Open application data folder"); separator();
+        item(OpenScreenshotFolder,L"Open screenshots folder"); item(OpenSettings,L"Open application data folder"); separator();
         item(ShortcutHelp,L"Keyboard shortcuts\t?"); item(About,L"About Velin"); separator(); item(Quit,L"Exit\tAlt+F4");
     } else if (action==PlaybackMenu) {
         item(TogglePause,state.paused?L"Play\tSpace":L"Pause\tSpace",false,!state.idle);
