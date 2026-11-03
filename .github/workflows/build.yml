@@ -32,6 +32,14 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-vulkan-loader
             ${{ matrix.preset == 'mingw-release' && 'mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja' || '' }}
+      - name: Use the Vulkan loader
+        shell: pwsh
+        run: |
+          # FFmpeg and libmpv both import it, from wherever the tests run them.
+          $loader = Join-Path $env:RUNNER_TEMP 'vulkan-loader'
+          New-Item -ItemType Directory -Force -Path $loader | Out-Null
+          Copy-Item "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\vulkan-1.dll" $loader
+          Add-Content -Path $env:GITHUB_PATH -Value $loader
       - name: Use MinGW toolchain
         if: matrix.preset == 'mingw-release'
         shell: pwsh
@@ -42,7 +50,6 @@ jobs:
           ./scripts/Get-Mpv.ps1
           ./scripts/Get-Helpers.ps1
           ./scripts/Get-WebView2.ps1
-          Copy-Item "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\vulkan-1.dll" runtime/
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
