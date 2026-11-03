@@ -78,7 +78,7 @@ struct Preferences {
   bool showChapterMarkers = true;
   bool showTimelineThumbnails = true;
   bool fullscreenAutoHide = true;
-  double controlsHideSeconds = 2.5;
+  double controlsHideSeconds = 3;
   double seekSeconds = 5;
   double volumeStep = 5;
   int sidebarWidth = 286;

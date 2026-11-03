@@ -363,10 +363,7 @@ LRESULT CALLBACK PlayerWindow::videoProc(HWND window, UINT message, WPARAM wPara
     auto* self = reinterpret_cast<PlayerWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (self) {
         switch (message) {
-        case WM_MOUSEMOVE:
-            self->interactionUntil_=GetTickCount64()+2500;
-            if (!self->controlsVisible_) { self->controlsVisible_=true; self->layoutVideo(); InvalidateRect(self->window_,nullptr,FALSE); }
-            break;
+        case WM_MOUSEMOVE: self->pointerMoved(); break;
         case WM_LBUTTONUP: self->execute(TogglePause); return 0;
         case WM_LBUTTONDBLCLK: self->toggleFullscreen(); return 0;
         case WM_RBUTTONUP: {
@@ -698,6 +695,16 @@ bool PlayerWindow::pointerOverChrome() const {
     if (!GetCursorPos(&point)) return false;
     const HWND under=WindowFromPoint(point);
     return std::any_of(layers_.begin(),layers_.end(),[under](const Layer& layer){return layer.shown && layer.window==under;});
+}
+
+void PlayerWindow::pointerMoved() {
+    // Windows also sends WM_MOUSEMOVE when windows change under a resting
+    // pointer (every overlay redraw does), so only real movement counts.
+    POINT point{};
+    if (!GetCursorPos(&point) || (point.x==lastPointer_.x && point.y==lastPointer_.y)) return;
+    lastPointer_=point;
+    interactionUntil_=GetTickCount64()+static_cast<ULONGLONG>(preferences_.controlsHideSeconds*1000);
+    if (!controlsVisible_) { controlsVisible_=true; layoutVideo(); InvalidateRect(window_,nullptr,FALSE); }
 }
 
 bool PlayerWindow::beginLayer(LayerId id, D2D1_RECT_F bounds) {
@@ -1301,8 +1308,12 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
             if (hovered_>=0 && dragAction_==None && under!=window_ && !IsChild(window_,under) && !isLayerWindow(under)) { hovered_=-1; preview_.hide(); InvalidateRect(window_,nullptr,FALSE); }
             // Controls float over the picture, so they step aside during playback
             // until the pointer moves, as in IINA.
-            const bool visible=!preferences_.fullscreenAutoHide || state.idle || state.paused || state.width==0 || GetTickCount64()<interactionUntil_ || hovered_>=0 || pointerOverChrome();
-            if (controlsVisible_!=visible) { controlsVisible_=visible; layoutVideo(); InvalidateRect(window_,nullptr,FALSE); }
+            const bool visible=!preferences_.fullscreenAutoHide || state.idle || state.paused || state.width==0 || GetTickCount64()<interactionUntil_ || dragAction_!=None || pointerOverChrome();
+            if (controlsVisible_!=visible) {
+                controlsVisible_=visible;
+                if (!visible) { hovered_=-1; preview_.hide(); thumbnailTime_=-1; }
+                layoutVideo(); InvalidateRect(window_,nullptr,FALSE);
+            }
             if (!IsIconic(window_) && ((!state.idle && !state.paused && (controlsVisible_ || sidebarShown())) || (noticeUntil_>0 && GetTickCount64()>=noticeUntil_))) {
                 InvalidateRect(window_,nullptr,FALSE);
                 if (GetTickCount64()>=noticeUntil_) noticeUntil_=0;
@@ -1311,7 +1322,7 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
         }
         return 0;
     case WM_MOUSEMOVE: {
-        interactionUntil_=GetTickCount64()+static_cast<ULONGLONG>(preferences_.controlsHideSeconds*1000);
+        pointerMoved();
         const float x=static_cast<float>(GET_X_LPARAM(lParam))/dpi_,y=static_cast<float>(GET_Y_LPARAM(lParam))/dpi_;
         if (dragAction_==SeekBar || dragAction_==VolumeBar) updatePointer(x,y,false);
         else {
@@ -1520,7 +1531,11 @@ void PlayerWindow::openPaths(const std::vector<std::string>& paths,bool append) 
 
 void PlayerWindow::toggleFullscreen() {
     fullscreen_=!fullscreen_;
-    controlsVisible_=true; interactionUntil_=GetTickCount64()+2500; hovered_=-1;
+    // Fullscreen opens on the bare picture; leaving it shows the controls
+    // until the usual hide delay passes.
+    controlsVisible_=!fullscreen_; hovered_=-1; preview_.hide();
+    interactionUntil_=fullscreen_?0:GetTickCount64()+static_cast<ULONGLONG>(preferences_.controlsHideSeconds*1000);
+    GetCursorPos(&lastPointer_);
     if (fullscreen_) {
         placement_.length=sizeof(placement_); GetWindowPlacement(window_,&placement_);
         MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);

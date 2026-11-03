@@ -193,7 +193,7 @@ void PlayerWindow::savePlaylist() {
 void PlayerWindow::togglePip() {
     if (fullscreen_) toggleFullscreen();
     preview_.hide();
-    pip_=!pip_; controlsVisible_=true; hovered_=-1; interactionUntil_=GetTickCount64()+2500;
+    pip_=!pip_; controlsVisible_=true; hovered_=-1; interactionUntil_=GetTickCount64()+static_cast<ULONGLONG>(preferences_.controlsHideSeconds*1000);
     if (pip_) {
         pipPlacement_.length=sizeof(pipPlacement_); GetWindowPlacement(window_,&pipPlacement_);
         pipStyle_=GetWindowLongPtrW(window_,GWL_STYLE);

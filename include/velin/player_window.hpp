@@ -9,6 +9,7 @@
 #include "velin/extensions.hpp"
 #include "velin/plugin_webview.hpp"
 #include "velin/tool_windows.hpp"
+#include <climits>
 #include <windows.h>
 #include <d2d1.h>
 #include <array>
@@ -136,6 +137,7 @@ private:
     void releaseLayers();
     bool isLayerWindow(HWND window) const;
     bool pointerOverChrome() const;
+    void pointerMoved();
     void drawTopBar();
     void drawControls();
     void drawSidebar();
@@ -223,6 +225,7 @@ private:
     double lastDrawPosition_=-1;
     std::wstring lastTitle_;
     ULONGLONG interactionUntil_ = 0;
+    POINT lastPointer_{LONG_MIN,LONG_MIN};
     WINDOWPLACEMENT placement_{};
     WINDOWPLACEMENT pipPlacement_{};
     LONG_PTR pipStyle_=0;
