@@ -9,7 +9,10 @@ permissions:
 
 jobs:
   windows:
-    runs-on: windows-latest
+    # Keep the runner image aligned with the Visual Studio 2022 generator in
+    # CMakePresets.json. The floating windows-latest image can move to an
+    # image without VS 2022 installed.
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
