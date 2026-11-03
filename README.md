@@ -4,7 +4,7 @@ A native Windows media player in modern C++20, porting IINA's playback model
 and essential player experience to Windows. The interface uses Win32,
 Direct2D, and DirectWrite; libmpv handles media playback.
 
-![Velin running on a desktop monitor](docs/images/velin-product-hero.png)
+![Velin editorial hero: the player window set over the Velin masthead](docs/images/velin-product-hero.png)
 
 This repository contains the 0.2.0 Windows development implementation. It does not
 yet implement every IINA feature. See [the porting notes](docs/PORTING.md) for
