@@ -112,7 +112,9 @@ void run(const std::filesystem::path& directory, bool headless) {
     velin::EngineConfiguration configuration;
     configuration.ytDlpExecutable=directory / "yt-dlp.exe";
     configuration.options["script-opts"]="ytdl_hook-try_ytdl_first=yes";
-    require(engine.initialize(window.video, window.parent, WM_APP + 71,configuration), "Engine initialization: " + engine.error());
+    // Initialize before reading error(): argument evaluation order is unspecified.
+    const bool initialized = engine.initialize(window.video, window.parent, WM_APP + 71,configuration);
+    require(initialized, "Engine initialization: " + engine.error());
     require(engine.ready(), "Engine must report ready after successful initialization");
     require(!engine.state().loaded, "Engine must not report loaded before opening media");
     configure(engine, headless);
@@ -235,7 +237,8 @@ void run(const std::filesystem::path& directory, bool headless) {
     require(!engine.ready(), "Engine must report stopped after shutdown");
     require(!engine.state().loaded, "Engine must clear loaded state after shutdown");
     engine.shutdown();
-    require(engine.initialize(window.video, window.parent, WM_APP + 71), "Engine reinitialization: " + engine.error());
+    const bool reinitialized = engine.initialize(window.video, window.parent, WM_APP + 71);
+    require(reinitialized, "Engine reinitialization: " + engine.error());
     configure(engine, headless);
     require(engine.open({second}), "Cannot enqueue playback after reinitialization");
     waitFor(engine, "Playback after reinitialization", [&](const auto& state) { return loaded(state, second); });
