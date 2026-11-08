@@ -659,15 +659,15 @@ std::string toUtf8(std::wstring_view text) {
   result.reserve(text.size());
   for (std::size_t i = 0; i < text.size(); ++i) {
     auto code = static_cast<std::uint32_t>(text[i]);
-    if constexpr (sizeof(wchar_t) == 2) {
-      if (code >= 0xd800 && code <= 0xdbff) {
-        if (++i >= text.size()) return {};
-        const auto low = static_cast<std::uint32_t>(text[i]);
-        if (low < 0xdc00 || low > 0xdfff) return {};
-        code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
-      } else if (code >= 0xdc00 && code <= 0xdfff) {
-        return {};
-      }
+    // UTF-16 surrogate pairs are combined for 32-bit wchar_t too, so callers
+    // that assemble UTF-16 code units (file decoding) work on every platform.
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (++i >= text.size()) return {};
+      const auto low = static_cast<std::uint32_t>(text[i]);
+      if (low < 0xdc00 || low > 0xdfff) return {};
+      code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return {};
     }
     if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return {};
     if (code < 0x80) {

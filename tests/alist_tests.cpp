@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // AList client tests. HTTP contracts run against an in-process mock server on
 // 127.0.0.1, so the suite never leaves the machine.
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "velin/socket_compat.hpp"
 #include "velin/alist.hpp"
 #include <atomic>
 #include <chrono>
@@ -53,13 +52,24 @@ public:
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         check(bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "Bind mock listener");
         check(listen(listener_, 16) == 0, "Listen on mock listener");
-        int length = sizeof(address);
+        velin::net::socklen length = sizeof(address);
         check(getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) == 0, "Read mock port");
         port_ = ntohs(address.sin_port);
         thread_ = std::thread([this] { serve(); });
     }
     ~MockServer() {
         stopping_ = true;
+        // Closing a socket does not wake a blocked accept() on every platform,
+        // so connect once to release it before closing.
+        const SOCKET wake = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (wake != INVALID_SOCKET) {
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_port = htons(port_);
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            connect(wake, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+            closesocket(wake);
+        }
         closesocket(listener_);
         if (thread_.joinable()) thread_.join();
     }
@@ -73,8 +83,8 @@ private:
         while (!stopping_) {
             const SOCKET client = accept(listener_, nullptr, nullptr);
             if (client == INVALID_SOCKET) return;
-            DWORD timeout = 5000;
-            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&timeout), sizeof(timeout));
+            velin::net::setReceiveTimeout(client, 5000);
+            velin::net::suppressSigpipe(client);
             try {
                 handle(client);
             } catch (...) {
@@ -329,9 +339,20 @@ void testEnvelopes() {
     }
 }
 
-void testSessionStore(const std::filesystem::path& root) {
-    const auto secret = alist::protectSecret("token value");
-    check(secret != "token value" && alist::unprotectSecret(secret) == "token value", "DPAPI round trip");
+// Returns false when this build cannot reach the secret store at all.
+bool testSessionStore(const std::filesystem::path& root) {
+    std::string secret;
+    try {
+        secret = alist::protectSecret("token value");
+    } catch (const std::exception& error) {
+#ifdef __APPLE__
+        // Unsigned macOS tools cannot use the data-protection Keychain; the
+        // signed iOS app can. Anything else is a real failure.
+        if (std::string_view(error.what()).find("errSecMissingEntitlement") != std::string_view::npos) return false;
+#endif
+        throw;
+    }
+    check(secret != "token value" && alist::unprotectSecret(secret) == "token value", "Secret round trip");
     const auto file = alist::sessionFile(root);
     std::string error;
     check(!alist::loadSession(file, error) && error.empty(), "Missing session is not an error");
@@ -350,6 +371,7 @@ void testSessionStore(const std::filesystem::path& root) {
     }
     check(!alist::loadSession(file, error) && !error.empty(), "Tampered session is rejected");
     check(alist::removeSession(file, error) && !std::filesystem::exists(file), "Remove session");
+    return true;
 }
 
 void testClient() {
@@ -442,9 +464,8 @@ void testUnreachable() {
 } // namespace
 
 int main() {
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::cerr << "FAIL WSAStartup\n";
+    if (!velin::net::startup()) {
+        std::cerr << "FAIL socket startup\n";
         return 1;
     }
     const auto root = std::filesystem::current_path() / "alist-test-data";
@@ -458,8 +479,8 @@ int main() {
         std::cout << "PASS folder sorting, playlist building, subtitle preference\n";
         testEnvelopes();
         std::cout << "PASS envelope and error mapping\n";
-        testSessionStore(root);
-        std::cout << "PASS DPAPI session store\n";
+        if (testSessionStore(root)) std::cout << "PASS encrypted session store\n";
+        else std::cout << "SKIP encrypted session store (no Keychain access for unsigned macOS builds)\n";
         testClient();
         std::cout << "PASS sign-in, current user, listing, details, folder passwords, service operations (loopback mock)\n";
         testUnreachable();
@@ -471,6 +492,6 @@ int main() {
     }
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
-    WSACleanup();
+    velin::net::cleanup();
     return status;
 }

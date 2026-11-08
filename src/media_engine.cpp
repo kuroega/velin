@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Velin contributors
 
 #include "velin/media_engine.hpp"
+#include "velin/system.hpp"
 
 #define MPV_ENABLE_DEPRECATED 0
 #include "mpv/client.h"
@@ -15,6 +16,10 @@
 #include <limits>
 #include <set>
 #include <utility>
+
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 namespace velin {
 namespace {
@@ -103,27 +108,6 @@ void eachArray(const mpv_node& node, Callback&& callback) {
     for (int i = 0; i < node.u.list->num; ++i) callback(node.u.list->values[i]);
 }
 
-std::filesystem::path executableDirectory() {
-    std::wstring path(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (!length || length >= path.size()) return {};
-    path.resize(length);
-    return std::filesystem::path(path).parent_path();
-}
-
-std::filesystem::path dataDirectory() {
-    std::wstring path(32768, L'\0');
-    const DWORD overrideLength = GetEnvironmentVariableW(L"VELIN_DATA_DIR", path.data(), static_cast<DWORD>(path.size()));
-    if (overrideLength && overrideLength < path.size()) {
-        const std::filesystem::path overridePath(std::wstring(path.data(), overrideLength));
-        if (overridePath.is_absolute()) return overridePath;
-    }
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", path.data(), static_cast<DWORD>(path.size()));
-    if (!length || length >= path.size()) return {};
-    path.resize(length);
-    return std::filesystem::path(path) / L"Velin";
-}
-
 std::string utf8Path(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
@@ -137,11 +121,15 @@ std::string number(double value) {
 } // namespace
 
 struct MediaEngine::Impl {
+#ifdef _WIN32
     HMODULE module = nullptr;
+#else
+    void* module = nullptr;
+#endif
     mpv_handle* handle = nullptr;
     bool initialized = false;
-    std::atomic<HWND> notifyWindow = nullptr;
-    UINT notifyMessage = 0;
+    std::atomic<bool> wakeActive = false;
+    EngineWakeup wakeup;  // Written only while no mpv thread can call wake().
     std::atomic<bool> wakePosted = false;
     std::uint64_t requestId = 0;
     std::string lastError;
@@ -182,27 +170,31 @@ struct MediaEngine::Impl {
 
     static void wake(void* context) {
         auto& self = *static_cast<Impl*>(context);
-        if (HWND window = self.notifyWindow.load(std::memory_order_acquire)) {
-            if (!self.wakePosted.exchange(true, std::memory_order_acq_rel)) {
-                if (!PostMessageW(window, self.notifyMessage, 0, 0))
-                    self.wakePosted.store(false, std::memory_order_release);
-            }
+        if (!self.wakeActive.load(std::memory_order_acquire)) return;
+        if (!self.wakePosted.exchange(true, std::memory_order_acq_rel)) {
+            if (!self.wakeup())
+                self.wakePosted.store(false, std::memory_order_release);
         }
     }
 
     void release() {
-        notifyWindow.store(nullptr, std::memory_order_release);
+        wakeActive.store(false, std::memory_order_release);
         if (handle) {
             if (mpv_set_wakeup_callback_fn) mpv_set_wakeup_callback_fn(handle, nullptr, nullptr);
             if (mpv_terminate_destroy_fn) mpv_terminate_destroy_fn(handle);
             handle = nullptr;
         }
+        wakeup = nullptr;  // mpv's threads have exited.
         initialized = false;
         playback.loaded = false;
         playback.idle = true;
         playback.seeking = false;
         if (module) {
+#ifdef _WIN32
             FreeLibrary(module);
+#else
+            dlclose(module);
+#endif
             module = nullptr;
         }
         wakePosted.store(false, std::memory_order_release);
@@ -210,11 +202,16 @@ struct MediaEngine::Impl {
     }
 
     bool load() {
-        const auto directory = executableDirectory();
+#if defined(VELIN_MPV_LINKED)
+        // libmpv is linked into the app (iOS); no runtime loading.
+#define LOAD_MPV(name) name##_fn = &name;
+#else
+        const auto directory = sys::executableDirectory();
         if (directory.empty()) {
             report("Cannot locate the Velin executable directory.");
             return false;
         }
+#ifdef _WIN32
         for (const wchar_t* name : {L"libmpv-2.dll", L"mpv-2.dll"}) {
             const auto path = directory / name;
             module = LoadLibraryExW(path.c_str(), nullptr,
@@ -229,6 +226,27 @@ struct MediaEngine::Impl {
 #define LOAD_MPV(name) \
         name##_fn = std::bit_cast<decltype(name##_fn)>(GetProcAddress(module, #name)); \
         if (!name##_fn) { report("The playback library is missing " #name ". Install a current libmpv build."); return false; }
+#else
+        // Beside the executable first, then the system search path (Homebrew).
+        for (const char* name : {"libmpv.2.dylib", "libmpv.dylib", "libmpv.so.2"}) {
+            const auto path = directory / name;
+            module = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (!module) module = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+            if (module) break;
+        }
+#ifdef __APPLE__
+        for (const char* path : {"/opt/homebrew/lib/libmpv.2.dylib", "/usr/local/lib/libmpv.2.dylib"})
+            if (!module) module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+#endif
+        if (!module) {
+            report("Playback engine not found. Place libmpv beside the executable or install it (brew install mpv).");
+            return false;
+        }
+#define LOAD_MPV(name) \
+        name##_fn = std::bit_cast<decltype(name##_fn)>(dlsym(module, #name)); \
+        if (!name##_fn) { report("The playback library is missing " #name ". Install a current libmpv build."); return false; }
+#endif
+#endif
         LOAD_MPV(mpv_client_api_version)
         LOAD_MPV(mpv_create)
         LOAD_MPV(mpv_initialize)
@@ -365,16 +383,30 @@ struct MediaEngine::Impl {
 MediaEngine::MediaEngine() : impl_(std::make_unique<Impl>()) {}
 MediaEngine::~MediaEngine() { shutdown(); }
 
+#ifdef _WIN32
 bool MediaEngine::initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMessage) {
     return initialize(videoWindow, notifyWindow, notifyMessage, {});
 }
 
 bool MediaEngine::initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMessage, const EngineConfiguration& configuration) {
+    if (!videoWindow || !notifyWindow || !notifyMessage) {
+        shutdown();
+        impl_->lastError.clear();
+        impl_->playback = {};
+        impl_->report("A video window and notification window are required.");
+        return false;
+    }
+    return initialize(VideoOutput{reinterpret_cast<std::intptr_t>(videoWindow)},
+        [notifyWindow, notifyMessage] { return PostMessageW(notifyWindow, notifyMessage, 0, 0) != FALSE; }, configuration);
+}
+#endif
+
+bool MediaEngine::initialize(const VideoOutput& video, EngineWakeup wakeup, const EngineConfiguration& configuration) {
     shutdown();
     impl_->lastError.clear();
     impl_->playback = {};
-    if (!videoWindow || !notifyWindow || !notifyMessage) {
-        impl_->report("A video window and notification window are required.");
+    if (!wakeup) {
+        impl_->report("An engine wakeup callback is required.");
         return false;
     }
     if (!impl_->load()) {
@@ -411,7 +443,7 @@ bool MediaEngine::initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMes
     };
     for (const auto& [name, value] : userDefaults)
         impl_->mpv_set_option_string_fn(impl_->handle, name, value.c_str());
-    const auto data = dataDirectory();
+    const auto data = sys::dataDirectory();
     if (!data.empty()) {
         std::error_code filesystemError;
         const auto config = configuration.configDirectory.empty() ? data / L"mpv" : configuration.configDirectory;
@@ -451,10 +483,19 @@ bool MediaEngine::initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMes
             impl_->release(); return false;
         }
     }
-    // Windows USER handles are 32-bit values even in a 64-bit process. Avoid
-    // sign extension when passing the integer HWND representation to libmpv.
-    std::int64_t windowId = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(videoWindow));
-    int result = impl_->mpv_set_option_fn(impl_->handle, "wid", MPV_FORMAT_INT64, &windowId);
+    int result = 0;
+    if (video.nativeHandle) {
+#ifdef _WIN32
+        // Windows USER handles are 32-bit values even in a 64-bit process. Avoid
+        // sign extension when passing the integer HWND representation to libmpv.
+        std::int64_t windowId = static_cast<std::uint32_t>(static_cast<std::uintptr_t>(video.nativeHandle));
+#else
+        std::int64_t windowId = static_cast<std::int64_t>(video.nativeHandle);
+#endif
+        result = impl_->mpv_set_option_fn(impl_->handle, "wid", MPV_FORMAT_INT64, &windowId);
+    } else {
+        result = impl_->mpv_set_option_string_fn(impl_->handle, "vo", "null");
+    }
     if (result >= 0) result = impl_->mpv_initialize_fn(impl_->handle);
     if (result < 0) {
         impl_->report("The playback engine could not initialize: " + impl_->describe(result));
@@ -488,8 +529,8 @@ bool MediaEngine::initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMes
         impl_->mpv_observe_property_fn(impl_->handle, id++, name, format);
         impl_->observed.insert(name);
     }
-    impl_->notifyMessage = notifyMessage;
-    impl_->notifyWindow.store(notifyWindow, std::memory_order_release);
+    impl_->wakeup = std::move(wakeup);
+    impl_->wakeActive.store(true, std::memory_order_release);
     impl_->mpv_set_wakeup_callback_fn(impl_->handle, &Impl::wake, impl_.get());
     return true;
 }

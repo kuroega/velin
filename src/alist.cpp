@@ -2,9 +2,7 @@
 #include "velin/alist.hpp"
 #include "velin/core.hpp"
 #include "velin/library.hpp"
-#include <windows.h>
-#include <bcrypt.h>
-#include <dpapi.h>
+#include "velin/system.hpp"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -40,12 +38,8 @@ std::string hex(const unsigned char* bytes, std::size_t size) {
     return result;
 }
 std::string sha256(std::string_view data) {
-    unsigned char digest[32];
-    const auto status = BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0,
-        reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())), static_cast<ULONG>(data.size()),
-        digest, sizeof(digest));
-    if (status < 0) throw std::runtime_error("SHA-256 failed");
-    return hex(digest, sizeof(digest));
+    const auto digest = sys::sha256(data);
+    return hex(digest.data(), digest.size());
 }
 std::string stem(std::string_view name) {
     const auto dot = name.rfind('.');
@@ -236,8 +230,8 @@ std::vector<Entry> subtitlesFor(const Entry& video, const std::vector<Entry>& si
 
 std::string generateClientId() {
     unsigned char bytes[16];
-    if (BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
-        throw std::runtime_error("Cannot generate a client identifier");
+    try { sys::randomBytes(bytes, sizeof(bytes)); }
+    catch (const std::exception&) { throw std::runtime_error("Cannot generate a client identifier"); }
     return hex(bytes, sizeof(bytes));
 }
 
@@ -423,24 +417,13 @@ FileDetail Client::get(std::string_view path, std::string_view folderPassword, s
 }
 
 std::string protectSecret(std::string_view plain) {
-    DATA_BLOB input{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()))};
-    DATA_BLOB output{};
-    if (!CryptProtectData(&input, L"Velin AList session", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output))
-        throw std::runtime_error("Cannot encrypt the AList session (Windows error " + std::to_string(GetLastError()) + ")");
-    std::string result(reinterpret_cast<const char*>(output.pbData), output.cbData);
-    LocalFree(output.pbData);
-    return result;
+    try { return sys::protectSecret(plain, "Velin AList session"); }
+    catch (const std::exception& error) { throw std::runtime_error(std::string("Cannot encrypt the AList session: ") + error.what()); }
 }
 
 std::string unprotectSecret(std::string_view protectedBytes) {
-    DATA_BLOB input{static_cast<DWORD>(protectedBytes.size()), reinterpret_cast<BYTE*>(const_cast<char*>(protectedBytes.data()))};
-    DATA_BLOB output{};
-    if (!CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output))
-        throw std::runtime_error("Cannot decrypt the AList session (Windows error " + std::to_string(GetLastError()) + ")");
-    std::string result(reinterpret_cast<const char*>(output.pbData), output.cbData);
-    SecureZeroMemory(output.pbData, output.cbData);
-    LocalFree(output.pbData);
-    return result;
+    try { return sys::unprotectSecret(protectedBytes); }
+    catch (const std::exception& error) { throw std::runtime_error(std::string("Cannot decrypt the AList session: ") + error.what()); }
 }
 
 bool saveSession(const std::filesystem::path& file, const Session& session, std::string& error) {
@@ -450,7 +433,7 @@ bool saveSession(const std::filesystem::path& file, const Session& session, std:
         auto plain = json.dump();
         std::string bytes(kSessionMagic);
         bytes += protectSecret(plain);
-        SecureZeroMemory(plain.data(), plain.size());
+        sys::secureZero(plain.data(), plain.size());
         return writeTextFileAtomic(file, bytes, error);
     } catch (const std::exception& exception) {
         error = exception.what();
@@ -470,7 +453,7 @@ std::optional<Session> loadSession(const std::filesystem::path& file, std::strin
             throw std::runtime_error("The AList session file is not recognised");
         auto plain = unprotectSecret(std::string_view(bytes).substr(kSessionMagic.size()));
         const auto json = Json::parse(plain, nullptr, false);
-        SecureZeroMemory(plain.data(), plain.size());
+        sys::secureZero(plain.data(), plain.size());
         if (json.is_discarded() || !json.is_object()) throw std::runtime_error("The AList session file is damaged");
         Session session{text(json, "server"), text(json, "username"), text(json, "clientId"), text(json, "token"),
                         text(json, "folder")};

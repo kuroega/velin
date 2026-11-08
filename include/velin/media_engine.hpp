@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Velin contributors
 #pragma once
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -9,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#endif
 
 #include <cstdint>
 #include <initializer_list>
@@ -93,9 +95,22 @@ struct PlaybackState {
     std::map<std::string, std::string> metadata;
 };
 
-// All methods except the internal libmpv wakeup callback run on the UI thread.
-// The supplied notification window must outlive shutdown(). Its message handler
-// calls poll(), then reads state(). No libmpv types escape this boundary.
+// Where mpv draws. nativeHandle is passed to mpv's "wid" option: an HWND on
+// Windows, a CAMetalLayer pointer on Apple platforms. Zero means no video
+// output (vo=null), for audio-only and headless use.
+struct VideoOutput {
+    std::intptr_t nativeHandle = 0;
+};
+
+// Called on an mpv thread when events are waiting. It must queue a call to
+// poll() on the UI thread and return quickly. Return false when the request
+// could not be queued, so the next wakeup tries again. Calls are coalesced
+// until poll() runs. It is never called after shutdown() returns.
+using EngineWakeup = std::function<bool()>;
+
+// All methods except the wakeup callback run on the UI thread.
+// The UI thread calls poll(), then reads state(). No libmpv types escape this
+// boundary.
 class MediaEngine final {
 public:
     MediaEngine();
@@ -105,8 +120,13 @@ public:
     MediaEngine(MediaEngine&&) = delete;
     MediaEngine& operator=(MediaEngine&&) = delete;
 
+    bool initialize(const VideoOutput& video, EngineWakeup wakeup, const EngineConfiguration& configuration = {});
+#ifdef _WIN32
+    // Posts notifyMessage to notifyWindow, which must outlive shutdown(); its
+    // handler calls poll().
     bool initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMessage);
     bool initialize(HWND videoWindow, HWND notifyWindow, UINT notifyMessage, const EngineConfiguration& configuration);
+#endif
     void shutdown();
     void poll();
     [[nodiscard]] bool ready() const;

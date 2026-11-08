@@ -1,4 +1,4 @@
-name: Windows build
+name: Build
 
 on:
   push:
@@ -87,3 +87,18 @@ jobs:
         with:
           name: Velin-windows-x64-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/Velin-*-windows-x64.zip
+
+  # The engine, platform services, extension host and their tests, built the
+  # way the iOS app will use them. The Windows player is not part of this job.
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Configure
+        run: cmake --preset macos-release
+      - name: Build
+        run: cmake --build --preset macos-release --parallel
+      - name: Test portable libraries
+        run: ctest --preset macos-release

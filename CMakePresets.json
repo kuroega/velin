@@ -20,14 +20,24 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/msvc-release",
       "cacheVariables": { "BUILD_TESTING": "ON" }
+    },
+    {
+      "name": "macos-release",
+      "displayName": "macOS Release (portable libraries and tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos-release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "BUILD_TESTING": "ON" }
     }
   ],
   "buildPresets": [
     { "name": "mingw-release", "configurePreset": "mingw-release" },
-    { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release" }
+    { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release" },
+    { "name": "macos-release", "configurePreset": "macos-release" }
   ],
   "testPresets": [
     { "name": "mingw-release", "configurePreset": "mingw-release", "output": { "outputOnFailure": true } },
-    { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "macos-release", "configurePreset": "macos-release", "output": { "outputOnFailure": true } }
   ]
 }

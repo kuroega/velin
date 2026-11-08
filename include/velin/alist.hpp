@@ -153,8 +153,9 @@ private:
     int timeoutMilliseconds_ = 15000;
 };
 
-// A saved sign-in. The file is encrypted with Windows DPAPI for the current
-// user, so another account or machine cannot read the token.
+// A saved sign-in. The file is encrypted for the current user (Windows DPAPI,
+// or a Keychain-held key on Apple platforms), so another account or machine
+// cannot read the token.
 struct Session {
     std::string server;
     std::string username;

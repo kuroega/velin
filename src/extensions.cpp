@@ -3,9 +3,7 @@
 #include "velin/alist.hpp"
 #include "velin/core.hpp"
 #include "velin/plugin_websocket.hpp"
-#include <winhttp.h>
-#include <bcrypt.h>
-#include <shellapi.h>
+#include "velin/system.hpp"
 #include "quickjs.h"
 #include "miniz.h"
 #include "iina_compat.hpp"
@@ -48,13 +46,12 @@ std::string readFile(const std::filesystem::path& path, std::size_t maximum = 32
 }
 void writeFile(const std::filesystem::path& path, const std::string& text) {
     std::filesystem::create_directories(path.parent_path());
-    const auto temporary = path.wstring() + L".tmp";
-    { std::ofstream out(temporary.c_str(), std::ios::binary | std::ios::trunc);
+    auto temporary = path; temporary += ".tmp";
+    { std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
       ensure(static_cast<bool>(out), "Cannot write file: " + utf8Path(path));
       out.write(text.data(), static_cast<std::streamsize>(text.size()));
       ensure(out.good(), "File write failed"); }
-    ensure(MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0,
-        "Cannot atomically replace file");
+    sys::replaceFile(temporary, path);
 }
 std::string encode(const std::string& text) {
     constexpr char hex[] = "0123456789ABCDEF";
@@ -63,27 +60,6 @@ std::string encode(const std::string& text) {
         if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') result += static_cast<char>(c);
         else { result += '%'; result += hex[c >> 4]; result += hex[c & 15]; }
     }
-    return result;
-}
-struct Url {
-    std::wstring host, resource;
-    INTERNET_PORT port = 0;
-    bool secure = false;
-};
-Url parseUrl(const std::string& value) {
-    auto text = fromUtf8(value);
-    ensure(!text.empty() && text.find(L'\0') == std::wstring::npos, "Invalid URL");
-    URL_COMPONENTS parts{}; parts.dwStructSize = sizeof(parts);
-    parts.dwHostNameLength = parts.dwUrlPathLength = parts.dwExtraInfoLength = static_cast<DWORD>(-1);
-    ensure(WinHttpCrackUrl(text.c_str(), static_cast<DWORD>(text.size()), 0, &parts) != 0, "Invalid HTTP URL");
-    ensure(parts.nScheme == INTERNET_SCHEME_HTTP || parts.nScheme == INTERNET_SCHEME_HTTPS, "Only HTTP and HTTPS URLs are supported");
-    ensure(parts.dwUserNameLength == 0 && parts.dwPasswordLength == 0, "Credentials must be supplied as headers, not in URLs");
-    Url result;
-    result.host.assign(parts.lpszHostName, parts.dwHostNameLength);
-    result.resource.assign(parts.lpszUrlPath, parts.dwUrlPathLength);
-    if (parts.dwExtraInfoLength) result.resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-    if (result.resource.empty()) result.resource = L"/";
-    result.port = parts.nPort; result.secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
     return result;
 }
 bool domainAllowed(const std::string& host, const std::vector<std::string>& domains) {
@@ -96,80 +72,25 @@ bool domainAllowed(const std::string& host, const std::vector<std::string>& doma
     }
     return false;
 }
-struct InternetHandle {
-    HINTERNET value = nullptr;
-    ~InternetHandle() { if (value) WinHttpCloseHandle(value); }
-};
-std::string winError(const char* operation) { return std::string(operation) + " failed (Windows error " + std::to_string(GetLastError()) + ")"; }
-
 Json requestJson(HttpRequest request, std::stop_token stop) {
     const auto response = httpRequest(request, stop);
     ensure(response.ok(), response.error.empty() ? "HTTP " + std::to_string(response.status) + ": " + response.body.substr(0, 1024) : response.error);
     return Json::parse(response.body);
 }
-std::wstring quoteArgument(const std::wstring& input) {
-    std::wstring output = L"\"";
-    unsigned slashes = 0;
-    for (wchar_t c : input) {
-        if (c == L'\\') { ++slashes; continue; }
-        if (c == L'\"') { output.append(slashes * 2 + 1, L'\\'); output += L'\"'; }
-        else { output.append(slashes, L'\\'); output += c; }
-        slashes = 0;
-    }
-    output.append(slashes * 2, L'\\'); output += L'\"'; return output;
-}
 using ProcessProgress = std::function<void(bool, const std::string&)>;
-struct ProcessOutput { DWORD status=0; std::string output,error; };
-struct ProcessHandle {
-    HANDLE value=nullptr;
-    ~ProcessHandle(){if(value && value!=INVALID_HANDLE_VALUE)CloseHandle(value);}
-    void close(){if(value && value!=INVALID_HANDLE_VALUE)CloseHandle(value);value=nullptr;}
-};
+struct ProcessOutput { long long status=0; std::string output,error; };
 ProcessOutput executeProcess(const std::filesystem::path& executable,const std::vector<std::string>& arguments,
     std::stop_token stop,const std::filesystem::path& directory={},const ProcessProgress& progress={}) {
     const auto workingDirectory=directory.empty()?executable.parent_path():directory;
     ensure(std::filesystem::is_directory(workingDirectory),"Process working directory does not exist");
     ensure(executable.is_absolute() && std::filesystem::is_regular_file(executable),"Executable does not exist at an absolute path");
-    std::wstring command=quoteArgument(executable.wstring());
-    for(const auto& argument:arguments) {
-        ensure(argument.find('\0')==std::string::npos,"Process argument contains NUL");
-        const auto wide=fromUtf8(argument);ensure(argument.empty() || !wide.empty(),"Process argument is not valid UTF-8");
-        command+=L" "+quoteArgument(wide);
-    }
-    SECURITY_ATTRIBUTES security{sizeof(security),nullptr,TRUE};
-    ProcessHandle outputRead,outputWrite,errorRead,errorWrite,input,process,thread,job;
-    ensure(CreatePipe(&outputRead.value,&outputWrite.value,&security,65536)!=0,"Cannot create stdout pipe");
-    ensure(CreatePipe(&errorRead.value,&errorWrite.value,&security,65536)!=0,"Cannot create stderr pipe");
-    SetHandleInformation(outputRead.value,HANDLE_FLAG_INHERIT,0);
-    SetHandleInformation(errorRead.value,HANDLE_FLAG_INHERIT,0);
-    input.value=CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&security,OPEN_EXISTING,0,nullptr);
-    ensure(input.value!=INVALID_HANDLE_VALUE,"Cannot create helper stdin");
-    STARTUPINFOEXW startup{};startup.StartupInfo.cb=sizeof(startup);
-    startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput=input.value;startup.StartupInfo.hStdOutput=outputWrite.value;startup.StartupInfo.hStdError=errorWrite.value;
-    SIZE_T attributeSize=0;InitializeProcThreadAttributeList(nullptr,1,0,&attributeSize);
-    std::vector<unsigned char> attributes(attributeSize);
-    startup.lpAttributeList=reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
-    ensure(InitializeProcThreadAttributeList(startup.lpAttributeList,1,0,&attributeSize)!=0,"Cannot initialize helper handle list");
-    struct AttributeCleanup { LPPROC_THREAD_ATTRIBUTE_LIST list; ~AttributeCleanup(){DeleteProcThreadAttributeList(list);} } cleanup{startup.lpAttributeList};
-    HANDLE inherited[]{input.value,outputWrite.value,errorWrite.value};
-    ensure(UpdateProcThreadAttribute(startup.lpAttributeList,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),nullptr,nullptr)!=0,"Cannot restrict inherited helper handles");
-    PROCESS_INFORMATION created{};
-    ensure(CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,TRUE,
-        CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,nullptr,workingDirectory.c_str(),&startup.StartupInfo,&created)!=0,winError("CreateProcess"));
-    process.value=created.hProcess;thread.value=created.hThread;
-    outputWrite.close();errorWrite.close();input.close();
-    job.value=CreateJobObjectW(nullptr,nullptr);
-    if(job.value){JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job.value,JobObjectExtendedLimitInformation,&limits,sizeof(limits));AssignProcessToJobObject(job.value,process.value);}
-    ResumeThread(thread.value);thread.close();
+    sys::ChildProcess process(executable,arguments,workingDirectory);
     ProcessOutput result;std::string pending[2];
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(90);
-    auto drain=[&](HANDLE pipe,bool isError) {
-        DWORD available=0;
-        if(!PeekNamedPipe(pipe,nullptr,0,nullptr,&available,nullptr) || !available)return;
-        char buffer[8192];DWORD received=0;
-        if(!ReadFile(pipe,buffer,std::min<DWORD>(available,sizeof(buffer)),&received,nullptr) || !received)return;
+    auto drain=[&](bool isError) {
+        char buffer[8192];
+        const auto received=process.read(isError,buffer,sizeof(buffer));
+        if(!received)return;
         auto& output=isError?result.error:result.output;output.append(buffer,received);
         ensure(result.output.size()+result.error.size()<=8*1024*1024,"Helper exceeded its 8 MiB output limit");
         auto& text=pending[isError?1:0];text.append(buffer,received);
@@ -186,18 +107,18 @@ ProcessOutput executeProcess(const std::filesystem::path& executable,const std::
     try {
         while(true){
             const auto before=result.output.size()+result.error.size();
-            drain(outputRead.value,false);drain(errorRead.value,true);
+            drain(false);drain(true);
             ensure(!stop.stop_requested(),"Cancelled");
             ensure(std::chrono::steady_clock::now()<=deadline,"Helper exceeded its 90-second time limit");
-            if(WaitForSingleObject(process.value,before==result.output.size()+result.error.size()?10:0)==WAIT_OBJECT_0){
-                while(true){const auto before=result.output.size()+result.error.size();drain(outputRead.value,false);drain(errorRead.value,true);
+            if(process.wait(before==result.output.size()+result.error.size()?10:0)){
+                while(true){const auto before=result.output.size()+result.error.size();drain(false);drain(true);
                     if(before==result.output.size()+result.error.size())break;}
                 break;
             }
         }
         ensure(pending[0].empty() && pending[1].empty(),"Process output ends with truncated UTF-8");
-        ensure(GetExitCodeProcess(process.value,&result.status)!=0,"Cannot obtain helper exit status");
-    }catch(...){TerminateProcess(process.value,1);WaitForSingleObject(process.value,5000);throw;}
+        result.status=process.exitCode();
+    }catch(...){process.terminate();throw;}
     return result;
 }
 std::string runProcess(const std::filesystem::path& executable,const std::vector<std::string>& arguments,std::stop_token stop) {
@@ -213,67 +134,26 @@ HttpResponse httpRequest(const HttpRequest& original, std::stop_token stop) {
         HttpRequest request = original;
         for (int redirects = 0; redirects < 6; ++redirects) {
             if (stop.stop_requested()) throw std::runtime_error("Cancelled");
-            const auto url = parseUrl(request.url);
-            ensure(domainAllowed(toUtf8(url.host), request.allowedDomains), "HTTP host is not allowed by the plugin manifest");
-            InternetHandle session{WinHttpOpen(L"Velin/0.2.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
-            ensure(session.value != nullptr, winError("WinHttpOpen"));
-            WinHttpSetTimeouts(session.value, request.timeoutMilliseconds, request.timeoutMilliseconds,
-                request.timeoutMilliseconds, request.timeoutMilliseconds);
-            InternetHandle connection{WinHttpConnect(session.value, url.host.c_str(), url.port, 0)};
-            ensure(connection.value != nullptr, winError("WinHttpConnect"));
-            const auto method = fromUtf8(request.method);
-            std::atomic<HINTERNET> active{WinHttpOpenRequest(connection.value, method.c_str(), url.resource.c_str(),
-                nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, url.secure ? WINHTTP_FLAG_SECURE : 0)};
-            ensure(active.load() != nullptr, winError("WinHttpOpenRequest"));
-            struct ActiveCleanup { std::atomic<HINTERNET>& handle; ~ActiveCleanup() { if (auto value = handle.exchange(nullptr)) WinHttpCloseHandle(value); } } cleanup{active};
-            std::stop_callback cancel(stop, [&active] { if (auto value = active.exchange(nullptr)) WinHttpCloseHandle(value); });
-            DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-            WinHttpSetOption(active.load(), WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
-            std::wstring headers;
-            for (const auto& [key, value] : request.headers) {
+            const auto url = sys::parseHttpUrl(request.url);
+            ensure(domainAllowed(url.host, request.allowedDomains), "HTTP host is not allowed by the plugin manifest");
+            for (const auto& [key, value] : request.headers)
                 ensure(key.find_first_of("\r\n:") == std::string::npos && value.find_first_of("\r\n") == std::string::npos, "Invalid HTTP header");
-                headers += fromUtf8(key + ": " + value + "\r\n");
-            }
-            ensure(request.body.size() <= static_cast<std::size_t>(std::numeric_limits<DWORD>::max()), "HTTP request body is too large");
-            ensure(WinHttpSendRequest(active.load(), headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
-                headers.empty() ? 0 : static_cast<DWORD>(-1), request.body.empty() ? WINHTTP_NO_REQUEST_DATA : request.body.data(),
-                static_cast<DWORD>(request.body.size()), static_cast<DWORD>(request.body.size()), 0) != 0, winError("WinHttpSendRequest"));
-            ensure(WinHttpReceiveResponse(active.load(), nullptr) != 0, winError("WinHttpReceiveResponse"));
-            DWORD status = 0, size = sizeof(status);
-            ensure(WinHttpQueryHeaders(active.load(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) != 0, "Cannot read HTTP status");
-            result.status = status;
-            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-                DWORD length = 0;
-                WinHttpQueryHeaders(active.load(), WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &length, WINHTTP_NO_HEADER_INDEX);
-                ensure(length > 0 && length < 65536, "Invalid HTTP redirect");
-                std::wstring location(length / sizeof(wchar_t), L'\0');
-                ensure(WinHttpQueryHeaders(active.load(), WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX,
-                    location.data(), &length, WINHTTP_NO_HEADER_INDEX) != 0, "Cannot read HTTP redirect");
-                location.resize(wcslen(location.c_str()));
-                std::string target = toUtf8(location);
-                if (target.starts_with('/')) {
-                    target = std::string(url.secure ? "https://" : "http://") + toUtf8(url.host) + ":" + std::to_string(url.port) + target;
-                }
-                const auto next = parseUrl(target);
+            const auto response = sys::httpExchange({request.method, request.url, request.headers, request.body,
+                request.maximumBytes, request.timeoutMilliseconds}, stop);
+            result.status = response.status;
+            if (response.status == 301 || response.status == 302 || response.status == 303 || response.status == 307 || response.status == 308) {
+                std::string target = response.location;
+                if (target.starts_with('/')) target = sys::httpOrigin(url) + target;
+                const auto next = sys::parseHttpUrl(target);
                 ensure(!url.secure || next.secure, "An HTTPS request cannot redirect to insecure HTTP");
-                if (next.host != url.host || next.port != url.port) {
+                if (lower(next.host) != lower(url.host) || next.port != url.port) {
                     for (auto it = request.headers.begin(); it != request.headers.end();)
                         if (lower(it->first) == "authorization" || lower(it->first) == "api-key" || lower(it->first) == "cookie") it = request.headers.erase(it); else ++it;
                 }
-                if (status == 303 || ((status == 301 || status == 302) && request.method == "POST")) { request.method = "GET"; request.body.clear(); }
+                if (response.status == 303 || ((response.status == 301 || response.status == 302) && request.method == "POST")) { request.method = "GET"; request.body.clear(); }
                 request.url = target; continue;
             }
-            result.body.clear();
-            while (true) {
-                if (stop.stop_requested()) throw std::runtime_error("Cancelled");
-                char buffer[16384]; DWORD count = 0;
-                ensure(WinHttpReadData(active.load(), buffer, sizeof(buffer), &count) != 0, winError("WinHttpReadData"));
-                if (!count) break;
-                ensure(result.body.size() + count <= request.maximumBytes, "HTTP response exceeded its size limit");
-                result.body.append(buffer, count);
-            }
+            result.body = response.body;
             return result;
         }
         throw std::runtime_error("Too many HTTP redirects");
@@ -282,19 +162,7 @@ HttpResponse httpRequest(const HttpRequest& original, std::stop_token stop) {
 }
 
 std::string sha256File(const std::filesystem::path& path) {
-    BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;
-    ensure(BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0, "Cannot initialize SHA-256");
-    struct Cleanup { BCRYPT_ALG_HANDLE& a; BCRYPT_HASH_HANDLE& h; ~Cleanup() { if (h) BCryptDestroyHash(h); if (a) BCryptCloseAlgorithmProvider(a, 0); } } cleanup{algorithm, hash};
-    DWORD objectLength = 0, copied = 0;
-    ensure(BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectLength), sizeof(objectLength), &copied, 0) >= 0, "Cannot query SHA-256");
-    std::vector<unsigned char> object(objectLength);
-    ensure(BCryptCreateHash(algorithm, &hash, object.data(), objectLength, nullptr, 0, 0) >= 0, "Cannot create SHA-256 hash");
-    std::ifstream input(path, std::ios::binary); ensure(static_cast<bool>(input), "Cannot read file for hashing");
-    char buffer[65536];
-    while (input.read(buffer, sizeof(buffer)) || input.gcount())
-        ensure(BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer), static_cast<ULONG>(input.gcount()), 0) >= 0, "SHA-256 update failed");
-    ensure(input.eof(), "File read failed during hashing");
-    unsigned char digest[32]; ensure(BCryptFinishHash(hash, digest, sizeof(digest), 0) >= 0, "SHA-256 finish failed");
+    const auto digest = sys::sha256File(path);
     std::ostringstream result; result << std::hex << std::setfill('0');
     for (unsigned byte : digest) result << std::setw(2) << byte;
     return result.str();
@@ -321,12 +189,12 @@ Json serviceOperation(const std::string& operation, const Json& parameters, cons
         const auto response = httpRequest(file, stop);
         ensure(response.ok(), response.error.empty() ? "Download failed: HTTP " + std::to_string(response.status) : response.error);
         if (stop.stop_requested()) throw std::runtime_error("Cancelled");
-        const auto temporary = path.wstring() + L".download";
+        auto temporary = path; temporary += ".download";
         writeFile(temporary, response.body);
         try {
             const auto hash = sha256File(temporary);
             if (parameters.contains("sha256")) ensure(lower(parameters.at("sha256").get<std::string>()) == hash, "Downloaded file SHA-256 does not match the expected digest");
-            ensure(MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0, "Cannot commit downloaded file");
+            try { sys::replaceFile(temporary, path); } catch (const std::exception&) { throw std::runtime_error("Cannot commit downloaded file"); }
             return {{"path", utf8Path(path)}, {"sha256", hash}, {"bytes", response.body.size()}};
         } catch (...) { std::error_code ignored; std::filesystem::remove(temporary, ignored); throw; }
     };
@@ -476,12 +344,26 @@ std::vector<ServiceResult> OnlineServices::pollFor(const std::set<std::uint64_t>
 }
 
 namespace {
+bool sameComponent(const std::filesystem::path& left, const std::filesystem::path& right) {
+#ifdef _WIN32
+    return _wcsicmp(left.c_str(), right.c_str()) == 0;  // Windows paths are case-insensitive.
+#else
+    return left == right;
+#endif
+}
+bool linkOrReparsePoint(const std::filesystem::directory_entry& entry) {
+#ifdef _WIN32
+    return (GetFileAttributesW(entry.path().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    return entry.is_symlink();
+#endif
+}
 bool within(const std::filesystem::path& path, const std::filesystem::path& root) {
     const auto normalized = std::filesystem::weakly_canonical(path);
     const auto base = std::filesystem::weakly_canonical(root);
     auto current = normalized.begin();
     for (const auto& component : base) {
-        if (current == normalized.end() || _wcsicmp(current->c_str(), component.c_str()) != 0) return false;
+        if (current == normalized.end() || !sameComponent(*current, component)) return false;
         ++current;
     }
     return true;
@@ -539,7 +421,7 @@ void extractPackage(const std::filesystem::path& source, const std::filesystem::
     std::uint64_t total = 0;
     if (std::filesystem::is_directory(source)) {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(source)) {
-            ensure(!(GetFileAttributesW(entry.path().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT), "Plugin packages cannot contain symbolic links or reparse points");
+            ensure(!linkOrReparsePoint(entry), "Plugin packages cannot contain symbolic links or reparse points");
             const auto relative = safeRelative(utf8Path(std::filesystem::relative(entry.path(), source)));
             const auto target = destination / relative;
             if (entry.is_directory()) std::filesystem::create_directories(target);
@@ -706,7 +588,7 @@ struct PluginHost::Impl {
     std::string playable(Runtime& runtime, const std::string& value) {
         if (value.starts_with("http://") || value.starts_with("https://")) {
             requirePermission(runtime, "network-request");
-            ensure(!runtime.info.domains.empty() && domainAllowed(toUtf8(parseUrl(value).host), runtime.info.domains), "URL is not allowed by plugin domains");
+            ensure(!runtime.info.domains.empty() && domainAllowed(sys::parseHttpUrl(value).host, runtime.info.domains), "URL is not allowed by plugin domains");
             return value;
         }
         return utf8Path(resolve(runtime, value));
@@ -918,18 +800,13 @@ Json PluginHost::Impl::invoke(Runtime& runtime, const std::string& name, const J
             if(encoding=="ascii" || encoding=="isolatin1" || encoding=="iso-8859-1") {
                 std::wstring wide;for(unsigned char value:text){ensure(encoding!="ascii" || value<128,"File contains non-ASCII bytes");wide.push_back(value);}return toUtf8(wide);
             }
-            const std::map<std::string,UINT> pages{{"windowscp1250",1250},{"windowscp1251",1251},{"windowscp1252",1252},{"windowscp1253",1253},{"windowscp1254",1254},
+            const std::map<std::string,unsigned> pages{{"windowscp1250",1250},{"windowscp1251",1251},{"windowscp1252",1252},{"windowscp1253",1253},{"windowscp1254",1254},
                 {"windowscp1255",1255},{"windowscp1256",1256},{"windowscp1257",1257},{"windowscp1258",1258},
                 {"windowscyrillic",1251},{"windowsgreek",1253},{"windowslatin5",1254},{"windowshebrew",1255},{"windowsarabic",1256},{"windowsbalticrim",1257},{"windowsvietnamese",1258},
                 {"windowslatin2",1250},{"isolatin2",28592},{"shiftjis",932},{"shift-jis",932},{"big5",950},{"gbk",936},{"gb_18030_2000",54936},{"gb18030",54936},{"euc_kr",949},{"macosroman",10000}};
             const auto page=pages.find(encoding);
             ensure(page!=pages.end(),"Unsupported text encoding; use file.handle for binary data");
-            if(text.empty())return "";
-            const int length=MultiByteToWideChar(page->second,MB_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),nullptr,0);
-            ensure(length>0,"File contains invalid bytes or this encoding is unavailable on Windows");
-            std::wstring wide(static_cast<size_t>(length),L'\0');
-            ensure(MultiByteToWideChar(page->second,MB_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),wide.data(),length)==length,"Cannot decode text file");
-            return toUtf8(wide);
+            return sys::decodeCodePage(page->second,text);
         }
         if (operation == "write") { writeFile(path,string(1)); return true; }
         if (operation == "list") {
@@ -955,9 +832,8 @@ Json PluginHost::Impl::invoke(Runtime& runtime, const std::string& name, const J
             requirePermission(runtime,"file-system"); const auto file = parameters.at("file").get<std::string>();
             auto executable = pathUtf8(file);
             if (!executable.has_parent_path()) {
-                wchar_t buffer[32768]{};
-                ensure(SearchPathW(nullptr,fromUtf8(file).c_str(),L".exe",32768,buffer,nullptr) != 0,"Executable not found");
-                executable=buffer;
+                executable=sys::findExecutable(file);
+                ensure(!executable.empty(),"Executable not found");
             } else executable=resolve(runtime,file);
             parameters["executable"] = utf8Path(executable);
             if (parameters.contains("cwd") && !parameters["cwd"].is_null()) {
@@ -967,7 +843,7 @@ Json PluginHost::Impl::invoke(Runtime& runtime, const std::string& name, const J
             } else parameters.erase("cwd");
         } else {
             requirePermission(runtime,"network-request"); ensure(!runtime.info.domains.empty(), "Plugin has no allowed network domains");
-            const auto url = parameters.at("url").get<std::string>(); ensure(domainAllowed(toUtf8(parseUrl(url).host),runtime.info.domains), "URL is not allowed by plugin domains");
+            const auto url = parameters.at("url").get<std::string>(); ensure(domainAllowed(sys::parseHttpUrl(url).host,runtime.info.domains), "URL is not allowed by plugin domains");
             parameters["allowedDomains"] = runtime.info.domains;
         }
         if (operation == "plugin.download") {
@@ -993,9 +869,9 @@ Json PluginHost::Impl::invoke(Runtime& runtime, const std::string& name, const J
         auto options=args.at(0); if(options.contains("url")) options["url"]=playable(runtime,options["url"].get<std::string>());
         return ui(runtime,name,Json::array({options}));
     }
-    if (name == "utils.fileInPath") { requirePermission(runtime,"file-system"); wchar_t buffer[32768]; return SearchPathW(nullptr,fromUtf8(string(0)).c_str(),L".exe",32768,buffer,nullptr) != 0; }
+    if (name == "utils.fileInPath") { requirePermission(runtime,"file-system"); return !sys::findExecutable(string(0)).empty(); }
     if (name == "utils.open") { const auto path = playable(runtime,string(0)); return ui(runtime,name,Json::array({path})); }
-    if (name == "utils.preferredLocalizations") { wchar_t locale[LOCALE_NAME_MAX_LENGTH]{}; GetUserDefaultLocaleName(locale,LOCALE_NAME_MAX_LENGTH); return Json::array({toUtf8(locale),"en-US"}); }
+    if (name == "utils.preferredLocalizations") { return Json::array({sys::preferredLocale(),"en-US"}); }
     if (name == "subtitle.register") { return true; }
     if(name=="subtitle.downloaded"){
         auto data=args;if(data.size()>1 && data[1].is_array())for(auto& path:data[1])if(path.is_string())path=utf8Path(resolve(runtime,path.get<std::string>()));
@@ -1030,14 +906,14 @@ std::vector<PluginInfo> PluginHost::discover() {
 }
 PluginInfo PluginHost::inspect(const std::filesystem::path& source) {
     if (std::filesystem::is_directory(source)) return manifestAt(source);
-    const auto stage=impl_->root/(".inspect-"+std::to_string(GetCurrentProcessId()));
+    const auto stage=impl_->root/(".inspect-"+std::to_string(sys::processId()));
     try { std::filesystem::remove_all(stage); extractPackage(source,stage); auto info=manifestAt(packageRoot(stage)); info.directory=source; std::filesystem::remove_all(stage); return info; }
     catch (...) { std::error_code ignored; std::filesystem::remove_all(stage,ignored); throw; }
 }
 PluginInfo PluginHost::install(const std::filesystem::path& source,const std::set<std::string>& approved,bool replace) {
     ensure(!busy(),"Wait for the active plugin callback before installing a package");
-    const auto stage=impl_->root/(".install-"+std::to_string(GetCurrentProcessId()));
-    const auto backup=impl_->root/(".backup-"+std::to_string(GetCurrentProcessId()));
+    const auto stage=impl_->root/(".install-"+std::to_string(sys::processId()));
+    const auto backup=impl_->root/(".backup-"+std::to_string(sys::processId()));
     try {
         std::filesystem::remove_all(stage); extractPackage(source,stage); const auto package=packageRoot(stage); auto info=manifestAt(package);
         ensure(std::includes(approved.begin(),approved.end(),info.permissions.begin(),info.permissions.end()),"All declared plugin permissions require explicit approval");

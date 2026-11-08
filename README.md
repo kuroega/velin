@@ -41,6 +41,16 @@ ctest --preset mingw-release
 .\build\mingw-release\velin.exe
 ```
 
+On macOS, the engine, platform services, extension host and their tests
+build without the Windows player. This is the groundwork for an iOS edition.
+It needs Xcode, CMake and Ninja (`brew install cmake ninja`):
+
+```sh
+cmake --preset macos-release
+cmake --build --preset macos-release --parallel
+ctest --preset macos-release
+```
+
 The application can also open media passed on its command line:
 
 ```powershell

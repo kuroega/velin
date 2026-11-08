@@ -3,8 +3,10 @@
 #include "velin/plugin_url_policy.hpp"
 #include "miniz/miniz.h"
 #include <chrono>
+#ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#endif
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -29,7 +31,11 @@ velin::Json manifest(const std::string& id,const velin::Json& permissions=velin:
 int main(int argc,char** argv){
     if(argc==2 && std::string(argv[1])=="--fixture-cwd"){std::cout<<std::filesystem::current_path().string();return 0;}
     if(argc>=2 && std::string(argv[1])=="--fixture-stream") {
+        
+#ifdef _WIN32
         _setmode(_fileno(stdout),_O_BINARY);_setmode(_fileno(stderr),_O_BINARY);
+#endif
+
         std::cout<<"first:\xe6"<<std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
         std::cout<<"\xb8\xac\xe8\xa9\xa6\n"<<std::flush;
