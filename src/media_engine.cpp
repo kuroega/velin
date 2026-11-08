@@ -430,7 +430,9 @@ bool MediaEngine::initialize(const VideoOutput& video, EngineWakeup wakeup, cons
     };
     for (const auto& [name, value] : options) {
         const int result = impl_->mpv_set_option_string_fn(impl_->handle, name, value);
-        if (result < 0) {
+        // Velin's defaults are best effort: a libmpv built without a feature
+        // (iOS builds have no Lua, so no "osc") simply lacks that option.
+        if (result < 0 && result != MPV_ERROR_OPTION_NOT_FOUND) {
             impl_->report(std::string("Cannot configure playback option '") + name + "': " + impl_->describe(result));
             impl_->release();
             return false;

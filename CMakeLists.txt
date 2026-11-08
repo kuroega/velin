@@ -79,6 +79,15 @@ if(VELIN_PORTABLE_LIBRARIES)
     endif()
 
     include(cmake/Extensions.cmake)
+
+    if(APPLE)
+        # The Objective-C API Swift uses (include/velin/apple/VLNPlayer.h).
+        add_library(velin_apple STATIC src/apple/VLNPlayer.mm)
+        set_source_files_properties(src/apple/VLNPlayer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_include_directories(velin_apple PUBLIC include PRIVATE third_party)
+        target_link_libraries(velin_apple PUBLIC velin_engine velin_system velin_options
+            "-framework Foundation" "-framework QuartzCore")
+    endif()
 endif()
 
 if(VELIN_BUILD_PLAYER)

@@ -1,0 +1,55 @@
+# XcodeGen spec for the Velin iOS app. Generate the project with:
+#   scripts/build-ios-core.sh
+#   scripts/prepare-mpvkit.sh <folder with MPVKit zips>   # see config/mpvkit-ios.txt
+#   (cd ios && xcodegen)
+# For a real iPhone, set DEVELOPMENT_TEAM below (or in Xcode's Signing tab).
+name: VelinPlayer
+options:
+  bundleIdPrefix: app.velin
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  MPVKit:
+    # libmpv, FFmpeg, libass, libplacebo and MoltenVK as prebuilt
+    # xcframeworks (MPVKit 1.1.0-n9.0.2), checksum-verified from local zips.
+    path: ../build/ios/MPVKit
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+targets:
+  VelinPlayer:
+    type: application
+    platform: iOS
+    sources:
+      - VelinPlayer
+    dependencies:
+      - package: MPVKit
+        product: MPVKit-GPL
+      - framework: ../build/ios/VelinCore.xcframework
+        embed: false
+    info:
+      path: VelinPlayer/Info.plist
+      properties:
+        CFBundleDisplayName: Velin
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes: [audio]
+        UISupportedInterfaceOrientations:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # AList servers are often plain HTTP on the local network.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSLocalNetworkUsageDescription: Velin connects to media servers on your local network.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.velin.player
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # VelinCore's simulator slice is Apple silicon only.
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
