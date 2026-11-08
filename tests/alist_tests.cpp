@@ -270,6 +270,49 @@ void testPathsAndUrls() {
           "Playable by type or extension");
 }
 
+void testPlaylist() {
+    auto signedEntry = [](std::string name, std::string sign, bool directory = false, int type = 0) {
+        auto result = entry(name, "/Show/" + name, directory, type);
+        result.sign = std::move(sign);
+        return result;
+    };
+    std::vector<alist::Entry> folder{
+        signedEntry("Ep10.mkv", "s10"), signedEntry("Extras", "", true, 1), signedEntry("Ep2.mkv", "s2"),
+        signedEntry("ep1.MKV", "s1"), signedEntry("Ep2.zh-Hans.ass", "z2"), signedEntry("Ep2.en.srt", "e2"),
+        signedEntry("Ep10.ass", "a10"), signedEntry("notes.nfo", ""), signedEntry("Archive", "", true, 1),
+        signedEntry("Ep2.mkv.jpg", "j")};
+
+    auto sorted = folder;
+    alist::sortEntries(sorted);
+    check(sorted[0].name == "Archive" && sorted[1].name == "Extras" && sorted[2].name == "ep1.MKV" &&
+          sorted[3].name == "Ep2.en.srt", "Folders first, then natural order ignoring case");
+
+    const auto playlist = alist::buildPlaylist("http://h:5244", folder, "/Show/Ep2.mkv");
+    check(playlist.items.size() == 3 && playlist.start == 1, "Every playable file is queued, starting at the chosen one");
+    check(playlist.items[0].path == "/Show/ep1.MKV" && playlist.items[1].path == "/Show/Ep2.mkv" &&
+          playlist.items[2].path == "/Show/Ep10.mkv", "Playlist is in natural order");
+    check(playlist.items[1].url == "http://h:5244/d/Show/Ep2.mkv?sign=s2", "Items carry signed /d links");
+    check(playlist.items[1].subtitles.size() == 2 && playlist.items[1].subtitleNames[0] == "Ep2.en.srt" &&
+          playlist.items[1].subtitles[0] == "http://h:5244/d/Show/Ep2.en.srt?sign=e2" &&
+          playlist.items[1].subtitles[1] == "http://h:5244/d/Show/Ep2.zh-Hans.ass?sign=z2", "Subtitles attach to their own video");
+    check(playlist.items[2].subtitles.size() == 1 && playlist.items[0].subtitles.empty(), "Ep10 gets only its own subtitle");
+    check(alist::buildPlaylist("http://h", folder, "/Show/notes.nfo").items.empty() &&
+          alist::buildPlaylist("http://h", folder, "/Show/Missing.mkv").items.empty(), "Unplayable or missing choice gives no playlist");
+
+    const std::vector<std::string> names{"Ep2.en.srt", "Ep2.zh-Hans.ass", "Ep2.chi.forced.ass"};
+    check(alist::preferredSubtitle(names, "zh-Hans,eng") == 1, "First preferred language wins");
+    check(alist::preferredSubtitle(names, " ZH , en") == 1, "Leading subtag matches, case and spaces ignored");
+    check(alist::preferredSubtitle(names, "jpn,chi") == 2, "Later languages are tried in order");
+    check(alist::preferredSubtitle(names, "en") == 0 && alist::preferredSubtitle(names, "") == 0 &&
+          alist::preferredSubtitle(names, "fre") == 0, "Falls back to the first subtitle");
+    check(alist::preferredSubtitle({"Ep2.srt"}, "srt") == 0 && alist::preferredSubtitle({}, "eng") == 0, "Extensions are not language tags");
+
+    const auto round = alist::entryFromJson(alist::toJson(signedEntry("Ep2.mkv", "s2", false, 2)));
+    check(round.name == "Ep2.mkv" && round.path == "/Show/Ep2.mkv" && round.sign == "s2" && round.type == 2 && !round.isDirectory,
+          "Entries survive the service JSON round trip");
+    check(alist::entryFromJson(Json::array()).name.empty(), "Malformed entry JSON gives an empty entry");
+}
+
 void testEnvelopes() {
     check(alist::unwrap(200, R"({"code":200,"message":"success","data":{"a":1}})")["a"] == 1, "Success envelope");
     check(alist::unwrap(200, R"({"code":200,"message":"success"})").is_null(), "Missing data is null");
@@ -292,7 +335,7 @@ void testSessionStore(const std::filesystem::path& root) {
     const auto file = alist::sessionFile(root);
     std::string error;
     check(!alist::loadSession(file, error) && error.empty(), "Missing session is not an error");
-    const alist::Session session{"10.127.1.109:5244/", "kuroega", "0123456789abcdef0123456789abcdef", "jwt.token.value"};
+    const alist::Session session{"10.127.1.109:5244/", "kuroega", "0123456789abcdef0123456789abcdef", "jwt.token.value", "/Shows/S1"};
     check(alist::saveSession(file, session, error), "Save session: " + error);
     std::ifstream raw(file, std::ios::binary);
     const std::string bytes((std::istreambuf_iterator<char>(raw)), std::istreambuf_iterator<char>());
@@ -300,7 +343,7 @@ void testSessionStore(const std::filesystem::path& root) {
     check(bytes.find("jwt.token.value") == std::string::npos && bytes.find("kuroega") == std::string::npos, "Session file is encrypted");
     const auto loaded = alist::loadSession(file, error);
     check(loaded && loaded->server == "http://10.127.1.109:5244" && loaded->username == "kuroega" &&
-          loaded->clientId == session.clientId && loaded->token == session.token, "Session round trip: " + error);
+          loaded->clientId == session.clientId && loaded->token == session.token && loaded->folder == "/Shows/S1", "Session round trip: " + error);
     {
         std::ofstream damaged(file, std::ios::binary | std::ios::trunc);
         damaged << bytes.substr(0, bytes.size() - 8) << "garbage!";
@@ -411,6 +454,8 @@ int main() {
         std::filesystem::create_directories(root);
         testPathsAndUrls();
         std::cout << "PASS server URLs, paths, encoding, playback URL choice, password hash, subtitles\n";
+        testPlaylist();
+        std::cout << "PASS folder sorting, playlist building, subtitle preference\n";
         testEnvelopes();
         std::cout << "PASS envelope and error mapping\n";
         testSessionStore(root);

@@ -241,6 +241,69 @@ std::string generateClientId() {
     return hex(bytes, sizeof(bytes));
 }
 
+void sortEntries(std::vector<Entry>& entries) {
+    std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+        if (a.isDirectory != b.isDirectory) return a.isDirectory;
+        return naturalLess(a.name, b.name);
+    });
+}
+
+Playlist buildPlaylist(std::string_view server, const std::vector<Entry>& entries, std::string_view chosenPath) {
+    std::vector<Entry> playable;
+    for (const auto& entry : entries)
+        if (isPlayable(entry)) playable.push_back(entry);
+    sortEntries(playable);
+    Playlist result;
+    bool found = false;
+    for (const auto& entry : playable) {
+        if (entry.path == chosenPath) {
+            result.start = result.items.size();
+            found = true;
+        }
+        PlaylistItem item{entry.path, playbackUrl(server, entry), {}, {}};
+        for (const auto& subtitle : subtitlesFor(entry, entries)) {
+            item.subtitles.push_back(playbackUrl(server, subtitle));
+            item.subtitleNames.push_back(subtitle.name);
+        }
+        result.items.push_back(std::move(item));
+    }
+    if (!found) return {};
+    return result;
+}
+
+std::size_t preferredSubtitle(const std::vector<std::string>& names, std::string_view languages) {
+    // The tags between the first and last dots: "Ep01.zh-Hans.forced.ass" -> zh-hans, forced.
+    auto tags = [](const std::string& name) {
+        std::vector<std::string> result;
+        const auto lowered = lower(name);
+        const auto first = lowered.find('.'), last = lowered.rfind('.');
+        if (first == std::string::npos || first == last) return result;
+        std::size_t begin = first + 1;
+        while (begin < last) {
+            const auto end = lowered.find('.', begin);
+            if (end > begin) result.push_back(lowered.substr(begin, end - begin));
+            begin = end + 1;
+        }
+        return result;
+    };
+    std::size_t begin = 0;
+    while (begin <= languages.size()) {
+        const auto end = std::min(languages.find(',', begin), languages.size());
+        const auto language = lower(trim(languages.substr(begin, end - begin)));
+        if (!language.empty()) {
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                for (const auto& tag : tags(names[i])) {
+                    const auto separator = tag.find_first_of("-_");
+                    if (tag == language || (separator != std::string::npos && tag.substr(0, separator) == language))
+                        return i;
+                }
+            }
+        }
+        begin = end + 1;
+    }
+    return 0;
+}
+
 DirectoryPage parseDirectory(const Json& data, std::string_view directory) {
     if (!data.is_object()) fail(ErrorKind::InvalidResponse, 0, "AList returned a malformed folder listing");
     DirectoryPage page;
@@ -383,7 +446,7 @@ std::string unprotectSecret(std::string_view protectedBytes) {
 bool saveSession(const std::filesystem::path& file, const Session& session, std::string& error) {
     try {
         Json json{{"server", normalizeServerUrl(session.server)}, {"username", session.username},
-                  {"clientId", session.clientId}, {"token", session.token}};
+                  {"clientId", session.clientId}, {"token", session.token}, {"folder", session.folder}};
         auto plain = json.dump();
         std::string bytes(kSessionMagic);
         bytes += protectSecret(plain);
@@ -409,7 +472,8 @@ std::optional<Session> loadSession(const std::filesystem::path& file, std::strin
         const auto json = Json::parse(plain, nullptr, false);
         SecureZeroMemory(plain.data(), plain.size());
         if (json.is_discarded() || !json.is_object()) throw std::runtime_error("The AList session file is damaged");
-        Session session{text(json, "server"), text(json, "username"), text(json, "clientId"), text(json, "token")};
+        Session session{text(json, "server"), text(json, "username"), text(json, "clientId"), text(json, "token"),
+                        text(json, "folder")};
         session.server = normalizeServerUrl(session.server);
         return session;
     } catch (const std::exception& exception) {
@@ -431,6 +495,20 @@ std::filesystem::path sessionFile(const std::filesystem::path& dataDirectory) { 
 Json toJson(const Entry& entry) {
     return {{"name", entry.name}, {"path", entry.path}, {"isDirectory", entry.isDirectory}, {"size", entry.size},
             {"modified", entry.modified}, {"sign", entry.sign}, {"thumb", entry.thumb}, {"type", entry.type}};
+}
+
+Entry entryFromJson(const Json& json) {
+    Entry entry;
+    if (!json.is_object()) return entry;
+    entry.name = text(json, "name");
+    entry.path = text(json, "path");
+    entry.isDirectory = boolean(json, "isDirectory");
+    entry.size = number<std::int64_t>(json, "size");
+    entry.modified = text(json, "modified");
+    entry.sign = text(json, "sign");
+    entry.thumb = text(json, "thumb");
+    entry.type = number<int>(json, "type");
+    return entry;
 }
 
 Json toJson(const User& user) {

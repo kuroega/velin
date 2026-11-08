@@ -148,40 +148,6 @@ bool samePath(std::string_view left, std::string_view right) {
 #endif
 }
 
-bool naturalLess(std::string_view left, std::string_view right) {
-  std::size_t i = 0;
-  std::size_t j = 0;
-  while (i < left.size() && j < right.size()) {
-    const bool leftDigit = left[i] >= '0' && left[i] <= '9';
-    const bool rightDigit = right[j] >= '0' && right[j] <= '9';
-    if (leftDigit && rightDigit) {
-      const auto leftStart = i;
-      const auto rightStart = j;
-      while (i < left.size() && left[i] >= '0' && left[i] <= '9') ++i;
-      while (j < right.size() && right[j] >= '0' && right[j] <= '9') ++j;
-      auto significantLeft = leftStart;
-      auto significantRight = rightStart;
-      while (significantLeft < i && left[significantLeft] == '0') ++significantLeft;
-      while (significantRight < j && right[significantRight] == '0') ++significantRight;
-      const auto leftDigits = i - significantLeft;
-      const auto rightDigits = j - significantRight;
-      if (leftDigits != rightDigits) return leftDigits < rightDigits;
-      const auto comparison = left.substr(significantLeft, leftDigits)
-                                  .compare(right.substr(significantRight, rightDigits));
-      if (comparison != 0) return comparison < 0;
-      if (i - leftStart != j - rightStart) return i - leftStart < j - rightStart;
-    } else {
-      const auto a = static_cast<unsigned char>(asciiLower(left[i]));
-      const auto b = static_cast<unsigned char>(asciiLower(right[j]));
-      if (a != b) return a < b;
-      ++i;
-      ++j;
-    }
-  }
-  if (i != left.size() || j != right.size()) return i == left.size();
-  return left < right;
-}
-
 template <typename Number>
 bool parseNumber(std::string_view text, Number& value) {
   Number parsed{};
@@ -512,6 +478,40 @@ Preferences normalized(Preferences value) {
 }
 
 }  // namespace
+
+bool naturalLess(std::string_view left, std::string_view right) {
+  std::size_t i = 0;
+  std::size_t j = 0;
+  while (i < left.size() && j < right.size()) {
+    const bool leftDigit = left[i] >= '0' && left[i] <= '9';
+    const bool rightDigit = right[j] >= '0' && right[j] <= '9';
+    if (leftDigit && rightDigit) {
+      const auto leftStart = i;
+      const auto rightStart = j;
+      while (i < left.size() && left[i] >= '0' && left[i] <= '9') ++i;
+      while (j < right.size() && right[j] >= '0' && right[j] <= '9') ++j;
+      auto significantLeft = leftStart;
+      auto significantRight = rightStart;
+      while (significantLeft < i && left[significantLeft] == '0') ++significantLeft;
+      while (significantRight < j && right[significantRight] == '0') ++significantRight;
+      const auto leftDigits = i - significantLeft;
+      const auto rightDigits = j - significantRight;
+      if (leftDigits != rightDigits) return leftDigits < rightDigits;
+      const auto comparison = left.substr(significantLeft, leftDigits)
+                                  .compare(right.substr(significantRight, rightDigits));
+      if (comparison != 0) return comparison < 0;
+      if (i - leftStart != j - rightStart) return i - leftStart < j - rightStart;
+    } else {
+      const auto a = static_cast<unsigned char>(asciiLower(left[i]));
+      const auto b = static_cast<unsigned char>(asciiLower(right[j]));
+      if (a != b) return a < b;
+      ++i;
+      ++j;
+    }
+  }
+  if (i != left.size() || j != right.size()) return i == left.size();
+  return left < right;
+}
 
 const std::vector<PreferenceField>& preferenceFields() {
   static const std::vector<PreferenceField> fields = [] {

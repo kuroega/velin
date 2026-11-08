@@ -100,6 +100,29 @@ std::vector<Entry> subtitlesFor(const Entry& video, const std::vector<Entry>& si
 // 32 lowercase hex characters from the system RNG; sent as the Client-Id.
 std::string generateClientId();
 
+// Folders first, then everything else, each in natural order.
+void sortEntries(std::vector<Entry>& entries);
+// One folder queued for playback: every playable file in natural order, each
+// with the signed links of its subtitle siblings, starting at the chosen file.
+struct PlaylistItem {
+    std::string path;                   // AList path, for display and re-signing.
+    std::string url;                    // What libmpv opens.
+    std::vector<std::string> subtitles; // Subtitle links, in subtitlesFor() order.
+    std::vector<std::string> subtitleNames;
+};
+struct Playlist {
+    std::vector<PlaylistItem> items;
+    std::size_t start = 0;
+};
+// Empty when chosenPath is not a playable file among entries.
+Playlist buildPlaylist(std::string_view server, const std::vector<Entry>& entries, std::string_view chosenPath);
+// The subtitle to select among names, following mpv's slang list
+// ("zh-Hans,chi,eng"): the first language that matches one of the name's
+// inner dot-separated tags, such as "Ep01.zh-Hans.ass" or "Ep01.eng.srt". Tags
+// match whole, or by their leading subtag ("zh" matches "zh-Hans").
+// Falls back to the first subtitle; 0 for an empty list.
+std::size_t preferredSubtitle(const std::vector<std::string>& names, std::string_view languages);
+
 // Parsers for the "data" member of AList's {code, message, data} envelope.
 // directory is the listed folder; entries get absolute paths beneath it.
 DirectoryPage parseDirectory(const Json& data, std::string_view directory);
@@ -137,6 +160,7 @@ struct Session {
     std::string username;
     std::string clientId;
     std::string token;
+    std::string folder; // The last folder browsed, reopened next time.
 };
 std::string protectSecret(std::string_view plain);
 std::string unprotectSecret(std::string_view protectedBytes);
@@ -150,6 +174,8 @@ std::filesystem::path sessionFile(const std::filesystem::path& dataDirectory);
 
 namespace velin::alist {
 Json toJson(const Entry& entry);
+// Reads the toJson(Entry) shape back; missing members keep their defaults.
+Entry entryFromJson(const Json& json);
 Json toJson(const User& user);
 // Runs an OnlineServices "alist.*" operation:
 //   alist.login {server, clientId, username, password, otpCode?} -> {token, user}

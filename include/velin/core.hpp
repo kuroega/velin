@@ -24,6 +24,8 @@ std::string toUtf8(std::wstring_view text);
 std::string mediaTitle(std::string_view pathOrUrl);
 bool isSubtitleFile(std::string_view path);
 bool isMediaFile(std::string_view path);
+// Case-insensitive order that compares runs of digits by value ("Ep2" < "Ep10").
+bool naturalLess(std::string_view left, std::string_view right);
 
 // Expands directories one level, filtering their contents to supported media.
 // Explicit file paths and URLs retain their input order and are not filtered.
