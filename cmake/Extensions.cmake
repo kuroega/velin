@@ -14,7 +14,7 @@ add_library(velin_miniz STATIC third_party/miniz/miniz.c third_party/miniz/miniz
     third_party/miniz/miniz_tinfl.c third_party/miniz/miniz_tdef.c)
 target_include_directories(velin_miniz SYSTEM PUBLIC third_party/miniz)
 target_compile_definitions(velin_miniz PRIVATE MINIZ_NO_STDIO)
-add_library(velin_extensions STATIC src/extensions.cpp src/plugin_websocket.cpp)
+add_library(velin_extensions STATIC src/extensions.cpp src/plugin_websocket.cpp src/alist.cpp)
 target_include_directories(velin_extensions PUBLIC include third_party)
 target_link_libraries(velin_extensions PUBLIC velin_engine velin_core velin_options
     PRIVATE velin_quickjs velin_miniz winhttp bcrypt shell32 ole32 ws2_32 crypt32 advapi32)
@@ -28,4 +28,8 @@ if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/extensions_tests.
     target_link_libraries(velin_extensions_tests PRIVATE velin_extensions)
     velin_portable_runtime(velin_extensions_tests)
     add_test(NAME extensions COMMAND velin_extensions_tests)
+    add_executable(velin_alist_tests tests/alist_tests.cpp)
+    target_link_libraries(velin_alist_tests PRIVATE velin_extensions ws2_32)
+    velin_portable_runtime(velin_alist_tests)
+    add_test(NAME alist COMMAND velin_alist_tests)
 endif()

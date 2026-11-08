@@ -55,6 +55,7 @@ public:
     void configure(OnlineConfiguration configuration);
     // Operations: opensubtitles.login/search/download, assrt.search/detail/download,
     // online.resolve, plugins.catalog, updates.check, download.verified, http.request, process.exec.
+    // alist.login/me/list/get are described in velin/alist.hpp.
     // process.exec emits process.stdout/process.stderr string chunks before its final result.
     // Results are delivered on the caller's UI thread through poll().
     std::uint64_t submit(std::string operation, Json parameters = Json::object(), bool privateResult = false);

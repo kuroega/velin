@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "velin/extensions.hpp"
+#include "velin/alist.hpp"
 #include "velin/core.hpp"
 #include "velin/plugin_websocket.hpp"
 #include <winhttp.h>
@@ -301,6 +302,7 @@ std::string sha256File(const std::filesystem::path& path) {
 
 namespace {
 Json serviceOperation(const std::string& operation, const Json& parameters, const OnlineConfiguration& config, std::stop_token stop, const ProcessProgress& progress = {}) {
+    if (operation.starts_with("alist.")) return alist::serviceOperation(operation, parameters, stop);
     const auto query = parameters.value("query", parameters.value("q", std::string{}));
     HttpRequest request;
     request.headers = {{"User-Agent", "Velin v0.2.0"}, {"Accept", "application/json"}};
