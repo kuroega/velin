@@ -272,7 +272,14 @@ void PlayerWindow::updateWebViews() {
 void PlayerWindow::pollServices() {
     if (plugins_ && preferences_.pluginsEnabled) plugins_->poll();
     if (!online_) return;
-    for (const auto& result:online_->poll()) {
+    // Private results (such as an AList sign-in, which carries a token) are
+    // only handed to a caller that names their id, so collect the requests
+    // this window is waiting on explicitly before the general poll.
+    std::set<std::uint64_t> waiting;
+    for (const auto& [id,callback]:serviceCallbacks_) waiting.insert(id);
+    auto results=waiting.empty()?std::vector<ServiceResult>{}:online_->pollFor(waiting);
+    for (auto& result:online_->poll()) results.push_back(std::move(result));
+    for (const auto& result:results) {
         auto found=serviceCallbacks_.find(result.id);
         if (found!=serviceCallbacks_.end()) {
             auto callback=std::move(found->second); serviceCallbacks_.erase(found);
