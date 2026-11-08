@@ -303,6 +303,7 @@ void PlayerWindow::dispatchCommand(const std::string& command) {
 void PlayerWindow::acceptLaunch(const std::vector<std::wstring>& arguments) {
     std::vector<std::string> paths; bool append=false,fullscreen=false,pip=false,music=false;
     std::vector<std::string> commands; bool positionalOnly=false;
+    std::optional<std::string> alistTarget;
     for (size_t i=0;i<arguments.size();++i) {
         const auto value=toUtf8(arguments[i]);
         if (positionalOnly) { paths.push_back(value); continue; }
@@ -317,7 +318,8 @@ void PlayerWindow::acceptLaunch(const std::vector<std::wstring>& arguments) {
         else if (value.starts_with("--command=")) commands.push_back(value.substr(10));
         else if (value=="--register") execute(RegisterAssociations);
         else if (value=="--unregister") execute(UnregisterAssociations);
-        else if (value.starts_with("velin://open?") || value.starts_with("iina://open?")) {
+        else if (value.starts_with("velin://open?") || value.starts_with("iina://open?") || value.starts_with("velin://alist?")) {
+            const bool alistLink=value.starts_with("velin://alist?");
             const auto query=value.substr(value.find('?')+1); size_t begin=0;
             while (begin<query.size()) {
                 const auto end=query.find('&',begin); const auto part=query.substr(begin,end==std::string::npos?std::string::npos:end-begin);
@@ -329,7 +331,8 @@ void PlayerWindow::acceptLaunch(const std::vector<std::wstring>& arguments) {
                         if (encoded[n]=='%' && n+2<encoded.size() && hex(encoded[n+1])>=0 && hex(encoded[n+2])>=0) { decoded+=static_cast<char>(hex(encoded[n+1])*16+hex(encoded[n+2])); n+=2; }
                         else decoded+=encoded[n]=='+'?' ':encoded[n];
                     }
-                    if ((key=="url" || key=="path") && decoded.find('\0')==std::string::npos) paths.push_back(decoded);
+                    if (alistLink) { if (key=="path" && decoded.find('\0')==std::string::npos) alistTarget=decoded; }
+                    else if ((key=="url" || key=="path") && decoded.find('\0')==std::string::npos) paths.push_back(decoded);
                     else if (key=="enqueue") append=decoded=="1" || decoded=="true";
                     else if (key=="full_screen") fullscreen=decoded=="1" || decoded=="true";
                     else if (key.starts_with("mpv_")) engine_.setProperty(key.substr(4),decoded);
@@ -341,6 +344,15 @@ void PlayerWindow::acceptLaunch(const std::vector<std::wstring>& arguments) {
         } else if (!value.starts_with("--plugin-")) paths.push_back(value);
     }
     if (!paths.empty()) openPaths(paths,append);
+    // velin://alist?path=<AList path>: play a file (with the rest of its
+    // folder queued) or browse a folder, signing in first if needed.
+    if (alistTarget) {
+        std::string target;
+        try { target=alist::normalizePath(*alistTarget); } catch (const alist::Error&) { notice(L"The AList link has an invalid path.",true); }
+        if (!target.empty()) {
+            if (isMediaFile(target)) browseAList(alist::parentPath(target),target); else browseAList(target);
+        }
+    }
     if (fullscreen && !fullscreen_) toggleFullscreen();
     if (pip && !pip_) togglePip();
     if (music && !musicMode_) toggleMusicMode();

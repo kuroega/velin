@@ -119,11 +119,12 @@ private:
     void searchSubtitles();
     // AList browsing (player_alist.cpp). Requests run through online_; each
     // step continues in its service callback.
-    void browseAList(std::string folder={});
+    // autoplay: a file in folder to play straight away instead of listing.
+    void browseAList(std::string folder={},std::string autoplay={});
     void signInAList(std::function<void()> then,std::wstring message={});
     void submitAListLogin(std::string server,std::string username,std::string password,
                           std::string otpCode,std::function<void()> then);
-    void listAListFolder(std::string folder,bool fallBackToRoot=false);
+    void listAListFolder(std::string folder,bool fallBackToRoot=false,std::string autoplay={});
     void playAListFolder(const Json& entries,const std::string& folder,const std::string& chosen);
     void applyAListSubtitles();
     void signOutAList();

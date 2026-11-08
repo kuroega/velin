@@ -45,15 +45,15 @@ void PlayerWindow::saveAListSession() {
         notice(L"Could not save the AList sign-in: "+fromUtf8(error),true);
 }
 
-void PlayerWindow::browseAList(std::string folder) {
+void PlayerWindow::browseAList(std::string folder,std::string autoplay) {
     if (!online_) return;
     if (alistBusy_) { notice(L"Still waiting for the AList server…"); return; }
-    if (!loadAListSession()) { signInAList([this,folder] { browseAList(folder); }); return; }
+    if (!loadAListSession()) { signInAList([this,folder,autoplay] { browseAList(folder,autoplay); }); return; }
     // The remembered folder may have been moved or deleted since; fall back
     // to the root instead of failing.
     const bool remembered=folder.empty();
     if (remembered) folder=alistSession_->folder.empty()?"/":alistSession_->folder;
-    listAListFolder(folder,remembered);
+    listAListFolder(folder,remembered,autoplay);
 }
 
 void PlayerWindow::signInAList(std::function<void()> then,std::wstring message) {
@@ -113,7 +113,7 @@ void PlayerWindow::submitAListLogin(std::string server,std::string username,std:
     notice(L"Signing in to AList…");
 }
 
-void PlayerWindow::listAListFolder(std::string folder,bool fallBackToRoot) {
+void PlayerWindow::listAListFolder(std::string folder,bool fallBackToRoot,std::string autoplay) {
     if (!online_ || !alistSession_) return;
     folder=normalizedOrRoot(folder);
     Json parameters{{"server",alistSession_->server},{"clientId",alistSession_->clientId},
@@ -127,7 +127,7 @@ void PlayerWindow::listAListFolder(std::string folder,bool fallBackToRoot) {
     }
     const auto id=online_->submit("alist.list",std::move(parameters));
     alistBusy_=true;
-    serviceCallbacks_[id]=[this,folder,fallBackToRoot](const ServiceResult& result) {
+    serviceCallbacks_[id]=[this,folder,fallBackToRoot,autoplay](const ServiceResult& result) {
         alistBusy_=false;
         if (!alistSession_) return;
         if (!result.error.empty()) { notice(fromUtf8(result.error),true); return; }
@@ -137,7 +137,7 @@ void PlayerWindow::listAListFolder(std::string folder,bool fallBackToRoot) {
             if (kind=="unauthorized") {
                 // Tokens last 48 hours, and restarting AList invalidates them all.
                 alistSession_->token.clear(); saveAListSession();
-                signInAList([this,folder,fallBackToRoot] { listAListFolder(folder,fallBackToRoot); },
+                signInAList([this,folder,fallBackToRoot,autoplay] { listAListFolder(folder,fallBackToRoot,autoplay); },
                             L"Your AList sign-in has expired. Sign in again to continue.");
                 return;
             }
@@ -146,7 +146,7 @@ void PlayerWindow::listAListFolder(std::string folder,bool fallBackToRoot) {
                     errorMessage(reply)+L"\nIf “"+fromUtf8(folder)+L"” has a password, enter it here.",{},false,true);
                 if (!password) return;
                 alistFolderPasswords_[folder]=toUtf8(*password);
-                listAListFolder(folder,false); return;
+                listAListFolder(folder,false,autoplay); return;
             }
             if (fallBackToRoot && folder!="/") { listAListFolder("/",false); return; }
             notice(errorMessage(reply),true); return;
@@ -156,6 +156,11 @@ void PlayerWindow::listAListFolder(std::string folder,bool fallBackToRoot) {
         std::vector<alist::Entry> entries;
         for (const auto& item:reply.value("entries",Json::array())) entries.push_back(alist::entryFromJson(item));
         alist::sortEntries(entries);
+        if (!autoplay.empty()) {
+            const auto found=std::find_if(entries.begin(),entries.end(),[&](const alist::Entry& entry) { return entry.path==autoplay; });
+            if (found!=entries.end() && alist::isPlayable(*found)) { playAListFolder(reply.value("entries",Json::array()),folder,autoplay); return; }
+            notice(L"AList has no playable file at "+fromUtf8(autoplay)+L"; showing its folder instead.",true);
+        }
         std::vector<std::pair<std::wstring,std::wstring>> rows;
         std::vector<std::string> targets; // Folder to open, or "" with the file in files.
         std::vector<const alist::Entry*> files;
