@@ -69,7 +69,7 @@ if(VELIN_BUILD_PLAYER)
         user32 gdi32 advapi32 bcrypt windowscodecs)
 
     add_executable(velin WIN32 src/main.cpp src/player_window.cpp resources/velin.rc)
-    foreach(_velin_window_source IN ITEMS src/plugin_webview.cpp src/tool_windows.cpp src/preferences_dialog.cpp src/player_features.cpp src/player_actions.cpp src/player_services.cpp)
+    foreach(_velin_window_source IN ITEMS src/plugin_webview.cpp src/tool_windows.cpp src/preferences_dialog.cpp src/player_features.cpp src/player_actions.cpp src/player_services.cpp src/player_alist.cpp)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_velin_window_source}")
             target_sources(velin PRIVATE "${_velin_window_source}")
         endif()

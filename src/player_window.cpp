@@ -1228,6 +1228,7 @@ void PlayerWindow::onEngineEvent() {
         pendingSubtitles_.clear();
         pendingMediaPath_.clear();
     }
+    applyAListSubtitles();
     if (!state.error.empty() && state.error!=lastError_) {
         lastError_=state.error;
         pendingSubtitles_.clear(); pendingMediaPath_.clear();
@@ -1821,7 +1822,7 @@ void PlayerWindow::execute(int action,int data) {
         MessageBoxW(window_,value.c_str(),L"Media information",MB_OK | MB_ICONINFORMATION); break;
     }
     case ShortcutHelp:
-        MessageBoxW(window_,L"Ctrl+O  Open files\nCtrl+Shift+O  Open folder\nCtrl+L  Open URL\nCtrl+Shift+S  Add subtitles\n\n"
+        MessageBoxW(window_,L"Ctrl+O  Open files\nCtrl+Shift+O  Open folder\nCtrl+L  Open URL\nCtrl+Shift+L  Browse AList\nCtrl+Shift+S  Add subtitles\n\n"
             L"Space  Play / pause\nLeft / Right  Seek 5 seconds\nUp / Down  Adjust volume\nShift+Left / Right  Previous / next file\n"
             L"Page Up / Down  Previous / next chapter\n.  Frame step\n[ / ]  Change speed\nBackspace  Normal speed\n\n"
             L"F or Alt+Enter  Fullscreen\nEscape  Leave fullscreen\nP  Playlist / chapters\nCtrl+M  Compact window\nT  Always on top\n"
@@ -1851,7 +1852,7 @@ void PlayerWindow::showMenu(int action,POINT point) {
             {TogglePause,"play-pause"},{Stop,"stop"},{Next,"next"},{Previous,"previous"},{ToggleFullscreen,"fullscreen"},
             {PictureInPicture,"pip"},{MusicMode,"music-mode"},{TogglePlaylist,"playlist"},{PreferencesAction,"preferences"},
             {HistoryAction,"history"},{Screenshot,"screenshot"},{ToggleMute,"mute"},{CropVideo,"crop"},{ShowInfo,"inspector"},
-            {OnlineSubtitles,"online-subtitles"},{PluginManager,"plugins"},{AddSubtitle,"add-subtitles"},
+            {OnlineSubtitles,"online-subtitles"},{PluginManager,"plugins"},{AddSubtitle,"add-subtitles"},{BrowseAList,"alist-browse"},
             {SavePlaylist,"save-playlist"},{ShufflePlaylist,"shuffle"},{ZoomIn,"zoom-in"},{ZoomOut,"zoom-out"}};
         auto display=label;
         if (const auto command=commands.find(id);command!=commands.end()) {
@@ -1879,7 +1880,9 @@ void PlayerWindow::showMenu(int action,POINT point) {
             AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(extensions),L"Plugin commands");
         }
         item(OpenFiles,L"Open files...\tCtrl+O"); item(OpenFolder,L"Open folder...\tCtrl+Shift+O");
-        item(OpenUrl,L"Open URL...\tCtrl+L"); item(AddFiles,L"Add to playlist..."); separator();
+        item(OpenUrl,L"Open URL...\tCtrl+L"); item(BrowseAList,L"Browse AList...\tCtrl+Shift+L");
+        item(SignOutAList,L"Sign out of AList",false,loadAListSession());
+        item(AddFiles,L"Add to playlist..."); separator();
         item(RevealFile,L"Show current file in Explorer",false,!state.idle);item(TrashFile,L"Move current file to Recycle Bin...",false,!state.idle);
         HMENU recent=CreatePopupMenu();
         for (size_t i=0;i<preferences_.recentFiles.size();++i)
@@ -2032,7 +2035,7 @@ void PlayerWindow::keyDown(WPARAM key, bool released) {
     if (control) {
         switch(key) {
         case 'O': execute(shift?OpenFolder:OpenFiles); return;
-        case 'L': execute(OpenUrl); return;
+        case 'L': execute(shift?BrowseAList:OpenUrl); return;
         case 'S': if (shift) execute(AddSubtitle); return;
         case 'I': execute(ShowInfo); return;
         case 'M': execute(Compact); return;

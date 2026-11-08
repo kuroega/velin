@@ -136,7 +136,7 @@ bool saveInspectorWatches(const std::filesystem::path& file,const std::vector<st
 }
 }
 
-std::optional<std::wstring> showTextPrompt(HWND owner,std::wstring title,std::wstring label,std::wstring initial,bool multiline) {
+std::optional<std::wstring> showTextPrompt(HWND owner,std::wstring title,std::wstring label,std::wstring initial,bool multiline,bool secret) {
     ModalWindow dialog; HWND edit=nullptr;
     dialog.handler=[&](HWND,UINT message,WPARAM wparam,LPARAM)->LRESULT {
         if (message==WM_COMMAND && (LOWORD(wparam)==IDOK || LOWORD(wparam)==IDCANCEL)) {
@@ -146,7 +146,7 @@ std::optional<std::wstring> showTextPrompt(HWND owner,std::wstring title,std::ws
     };
     dialog.create(owner,title,600,multiline?430:200);
     control(dialog.window,L"STATIC",label,0,18,16,550,26,0);
-    edit=control(dialog.window,L"EDIT",initial,WS_TABSTOP|(multiline?(ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL):ES_AUTOHSCROLL),
+    edit=control(dialog.window,L"EDIT",initial,WS_TABSTOP|(multiline?(ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL):ES_AUTOHSCROLL)|(secret && !multiline?ES_PASSWORD:0),
         18,47,550,multiline?280:27,101);
     control(dialog.window,L"BUTTON",L"OK",WS_TABSTOP|BS_DEFPUSHBUTTON,376,multiline?344:99,90,29,IDOK);
     control(dialog.window,L"BUTTON",L"Cancel",WS_TABSTOP,478,multiline?344:99,90,29,IDCANCEL);
@@ -160,6 +160,46 @@ std::optional<std::wstring> showTextPrompt(HWND owner,std::wstring title,std::ws
     };
     dialog.run(owner);
     if (dialog.accepted) return answer;
+    return std::nullopt;
+}
+
+std::optional<SignInForm> showSignInPrompt(HWND owner,std::wstring title,std::wstring message,SignInForm initial) {
+    ModalWindow dialog;
+    dialog.handler=[&](HWND,UINT command,WPARAM wparam,LPARAM)->LRESULT {
+        if (command==WM_COMMAND && (LOWORD(wparam)==IDOK || LOWORD(wparam)==IDCANCEL)) {
+            dialog.accepted=LOWORD(wparam)==IDOK; dialog.done=true; return 0;
+        }
+        return -1;
+    };
+    const int top=message.empty()?16:62;
+    dialog.create(owner,title,600,top+228);
+    if (!message.empty()) control(dialog.window,L"STATIC",message,SS_EDITCONTROL,18,14,550,40,0);
+    HWND fields[3]{};
+    const wchar_t* labels[]={L"Server",L"Username",L"Password"};
+    const std::wstring* values[]={&initial.server,&initial.username,&initial.password};
+    for (int i=0;i<3;++i) {
+        control(dialog.window,L"STATIC",labels[i],0,18,top+4+i*42,110,24,0);
+        fields[i]=control(dialog.window,L"EDIT",*values[i],WS_TABSTOP|ES_AUTOHSCROLL|(i==2?ES_PASSWORD:0),130,top+i*42,438,27,101+i);
+    }
+    control(dialog.window,L"BUTTON",L"Sign in",WS_TABSTOP|BS_DEFPUSHBUTTON,376,top+136,90,29,IDOK);
+    control(dialog.window,L"BUTTON",L"Cancel",WS_TABSTOP,478,top+136,90,29,IDCANCEL);
+    // Start on the first empty field, so a remembered server and username go
+    // straight to the password.
+    HWND focus=fields[2];
+    for (HWND field:fields) if (GetWindowTextLengthW(field)==0) { focus=field; break; }
+    SetFocus(focus);
+    SignInForm answer;
+    const auto original=dialog.handler;
+    dialog.handler=[&](HWND window,UINT command,WPARAM wparam,LPARAM lparam)->LRESULT {
+        if (command==WM_COMMAND && LOWORD(wparam)==IDOK) {
+            answer={value(fields[0]),value(fields[1]),value(fields[2])};
+            SetWindowTextW(fields[2],L"");
+        }
+        return original(window,command,wparam,lparam);
+    };
+    dialog.run(owner);
+    if (dialog.accepted) return answer;
+    SecureZeroMemory(answer.password.data(),answer.password.size()*sizeof(wchar_t));
     return std::nullopt;
 }
 

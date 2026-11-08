@@ -149,6 +149,8 @@ bool PlayerWindow::executeFeature(int action,int data) {
         break;
     }
     case OnlineSubtitles: searchSubtitles(); break;
+    case BrowseAList: browseAList(); break;
+    case SignOutAList: signOutAList(); break;
     case CheckUpdates: {
         if (!online_) break;
         if (preferences_.updateManifestUrl.empty()) {

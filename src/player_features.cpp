@@ -287,7 +287,8 @@ void PlayerWindow::dispatchCommand(const std::string& command) {
         {"pip",PictureInPicture},{"music-mode",MusicMode},{"playlist",TogglePlaylist},{"preferences",PreferencesAction},
         {"history",HistoryAction},{"screenshot",Screenshot},{"mute",ToggleMute},{"crop",CropVideo},{"inspector",ShowInfo},
         {"online-subtitles",OnlineSubtitles},{"plugins",PluginManager},{"quit",Quit},{"add-subtitles",AddSubtitle},
-        {"save-playlist",SavePlaylist},{"shuffle",ShufflePlaylist},{"zoom-in",ZoomIn},{"zoom-out",ZoomOut}};
+        {"save-playlist",SavePlaylist},{"shuffle",ShufflePlaylist},{"zoom-in",ZoomIn},{"zoom-out",ZoomOut},
+        {"alist-browse",BrowseAList},{"alist-sign-out",SignOutAList}};
     auto value=command;
     if (value.starts_with("velin:")) value.erase(0,6);
     if (auto item=commands.find(value);item!=commands.end()) execute(item->second);

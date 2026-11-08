@@ -11,8 +11,13 @@
 namespace velin {
 // The system message font (Segoe UI) at the window's DPI, cached per DPI.
 HFONT dialogFont(HWND window);
+// secret masks the typed text, for passwords.
 std::optional<std::wstring> showTextPrompt(HWND owner,std::wstring title,std::wstring label,
-    std::wstring value={},bool multiline=false);
+    std::wstring value={},bool multiline=false,bool secret=false);
+struct SignInForm { std::wstring server,username,password; };
+// Server, username and a masked password. message is shown above the fields,
+// for example why the previous attempt failed.
+std::optional<SignInForm> showSignInPrompt(HWND owner,std::wstring title,std::wstring message,SignInForm initial);
 std::optional<size_t> chooseListItem(HWND owner,std::wstring title,
     const std::vector<std::pair<std::wstring,std::wstring>>& items,std::wstring caption={});
 std::vector<std::string> choosePaths(HWND owner,std::wstring title,bool multiple=false,

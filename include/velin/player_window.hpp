@@ -7,6 +7,7 @@
 #include "velin/platform.hpp"
 #include "velin/accessibility.hpp"
 #include "velin/extensions.hpp"
+#include "velin/alist.hpp"
 #include "velin/plugin_webview.hpp"
 #include "velin/tool_windows.hpp"
 #include <climits>
@@ -52,6 +53,7 @@ private:
         ReloadPlugins, PluginConsole, OnlineSubtitles, CheckUpdates, InstallUpdate, MediaLog,
         CopyScreenshot, RecognizeText, RegisterAssociations, UnregisterAssociations,
         CustomCropAspect, JumpToBeginning, VideoFilters, AudioFilters, OpenScreenshotFolder,
+        BrowseAList, SignOutAList,
         SpeedBase = 1000, AudioBase = 2000, SubtitleBase = 3000,
         ChapterBase = 4000, RecentBase = 5000, AspectBase = 6000,
         PluginMenuBase=7000,AudioDeviceBase=8000,VideoTrackBase=9000,SecondarySubtitleBase=10000,
@@ -115,6 +117,18 @@ private:
     void browsePluginCatalog();
     void downloadPluginRepository(std::string repository);
     void searchSubtitles();
+    // AList browsing (player_alist.cpp). Requests run through online_; each
+    // step continues in its service callback.
+    void browseAList(std::string folder={});
+    void signInAList(std::function<void()> then,std::wstring message={});
+    void submitAListLogin(std::string server,std::string username,std::string password,
+                          std::string otpCode,std::function<void()> then);
+    void listAListFolder(std::string folder,bool fallBackToRoot=false);
+    void playAListFolder(const Json& entries,const std::string& folder,const std::string& chosen);
+    void applyAListSubtitles();
+    void signOutAList();
+    bool loadAListSession();
+    void saveAListSession();
     void dispatchCommand(const std::string& command);
     void acceptLaunch(const std::vector<std::wstring>& arguments);
     bool receivePluginMessage(WPARAM sender,LPARAM payload);
@@ -204,6 +218,13 @@ private:
     std::map<std::uint64_t,std::function<void(const ServiceResult&)>> serviceCallbacks_;
     std::vector<Hit> hits_;
     std::vector<std::string> pendingSubtitles_;
+    std::optional<alist::Session> alistSession_;
+    std::map<std::string,std::string> alistFolderPasswords_;
+    // Subtitle links (and names) for each queued AList playback URL; added
+    // whenever that item starts, since mpv drops external tracks between files.
+    std::map<std::string,std::pair<std::vector<std::string>,std::vector<std::string>>> alistSubtitles_;
+    std::string alistSubtitlesFor_;
+    bool alistBusy_=false;
     std::string pendingMediaPath_;
     std::string pendingResumePath_;
     float width_ = 1120, height_ = 700, dpi_ = 1;
