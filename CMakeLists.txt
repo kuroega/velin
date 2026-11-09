@@ -82,10 +82,11 @@ if(VELIN_PORTABLE_LIBRARIES)
 
     if(APPLE)
         # The Objective-C API Swift uses (include/velin/apple/VLNPlayer.h).
-        add_library(velin_apple STATIC src/apple/VLNPlayer.mm)
-        set_source_files_properties(src/apple/VLNPlayer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        set(_velin_apple_sources src/apple/VLNPlayer.mm src/apple/VLNLibrary.mm src/apple/VLNAList.mm)
+        add_library(velin_apple STATIC ${_velin_apple_sources})
+        set_source_files_properties(${_velin_apple_sources} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_include_directories(velin_apple PUBLIC include PRIVATE third_party)
-        target_link_libraries(velin_apple PUBLIC velin_engine velin_system velin_options
+        target_link_libraries(velin_apple PUBLIC velin_engine velin_extensions velin_system velin_core velin_options
             "-framework Foundation" "-framework QuartzCore")
     endif()
 endif()

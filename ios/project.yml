@@ -39,6 +39,10 @@ targets:
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         UIFileSharingEnabled: true
+        # velin://alist?path=<AList path>, the same links the Windows player opens.
+        CFBundleURLTypes:
+          - CFBundleURLName: app.velin.link
+            CFBundleURLSchemes: [velin]
         LSSupportsOpeningDocumentsInPlace: true
         UIBackgroundModes: [audio]
         UISupportedInterfaceOrientations:
@@ -50,6 +54,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.velin.player
+        # Regenerate with: swift scripts/generate-ios-icon.swift resources/velin.svg
+        #   ios/VelinPlayer/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         # VelinCore's simulator slice is Apple silicon only.
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

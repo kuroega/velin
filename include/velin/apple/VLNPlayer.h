@@ -25,6 +25,27 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, getter=isSelected) BOOL selected;
 @end
 
+// Something to play: a local file or URL, plus what Velin knows about it.
+@interface VLNMediaItem : NSObject
+- (instancetype)initWithURL:(NSURL *)url title:(NSString *)title NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@property (nonatomic, readonly) NSURL *url;
+@property (nonatomic, readonly, copy) NSString *title;
+// Stable identity for history and resume, e.g. "velin://alist?path=..." for an
+// AList file whose signed URL may change. Defaults to the URL.
+@property (nonatomic, copy) NSString *historyKey;
+// Seconds to resume from once the file loads; 0 starts at the beginning.
+@property (nonatomic) double resumePosition;
+// External subtitles attached when this item starts playing.
+@property (nonatomic, copy) NSArray<NSURL *> *subtitleURLs;
+@property (nonatomic, copy) NSArray<NSString *> *subtitleNames;
+@end
+
+@interface VLNPlaylistEntry : NSObject
+@property (nonatomic, readonly, copy) NSString *title;
+@property (nonatomic, readonly, getter=isCurrent) BOOL current;
+@end
+
 @interface VLNPlayer : NSObject
 
 @property (nonatomic, weak, nullable) id<VLNPlayerDelegate> delegate;
@@ -40,6 +61,19 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Local files or http(s) URLs.
 - (BOOL)openURLs:(NSArray<NSURL *> *)urls append:(BOOL)append;
+// Replaces the playlist with items and starts at items[startIndex]. The chosen
+// item loads first, so nothing else starts streaming before it.
+- (BOOL)openItems:(NSArray<VLNMediaItem *> *)items startIndex:(NSInteger)startIndex;
+// The item playing now, when it was opened with -openItems:startIndex:.
+@property (nonatomic, readonly, nullable) VLNMediaItem *currentItem;
+@property (nonatomic, readonly, copy) NSArray<VLNPlaylistEntry *> *playlist;
+@property (nonatomic, readonly) NSInteger playlistPosition;
+- (void)selectPlaylistIndex:(NSInteger)index;
+- (void)playNext;
+- (void)playPrevious;
+// Subtitle languages in mpv's slang form, e.g. "zh-Hans,chi,eng", used to pick
+// among an item's external subtitles.
+@property (nonatomic, copy) NSString *subtitleLanguages;
 - (void)togglePause;
 - (void)seekTo:(double)seconds;
 - (void)seekBy:(double)seconds;
@@ -62,7 +96,87 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSInteger videoWidth;
 @property (nonatomic, readonly) NSInteger videoHeight;
 @property (nonatomic, readonly, copy) NSArray<VLNTrack *> *tracks;
+@property (nonatomic, readonly) double speed;
+@property (nonatomic, readonly) double volume;  // 0–100
 
+@end
+
+// ---- Playback history (Velin's HistoryStore) -------------------------------
+
+@interface VLNHistoryEntry : NSObject
+@property (nonatomic, readonly, copy) NSString *key;
+@property (nonatomic, readonly, copy) NSString *title;
+@property (nonatomic, readonly) NSDate *lastPlayed;
+@property (nonatomic, readonly) double position;
+@property (nonatomic, readonly) double duration;
+@property (nonatomic, readonly, getter=isFavorite) BOOL favorite;
+@end
+
+@interface VLNLibrary : NSObject
+// History lives in Velin's data folder (Application Support/Velin).
+- (instancetype)init;
+// Most recent first.
+- (NSArray<VLNHistoryEntry *> *)recentEntries;
+- (nullable VLNHistoryEntry *)entryForKey:(NSString *)key;
+- (void)recordKey:(NSString *)key title:(NSString *)title position:(double)position
+         duration:(double)duration countPlay:(BOOL)countPlay;
+- (void)removeKey:(NSString *)key;
+- (void)setFavorite:(BOOL)favorite forKey:(NSString *)key;
+- (void)clear;
+@end
+
+// ---- AList -------------------------------------------------------------------
+
+FOUNDATION_EXPORT NSErrorDomain const VLNAListErrorDomain;
+typedef NS_ERROR_ENUM(VLNAListErrorDomain, VLNAListErrorCode) {
+    VLNAListErrorInvalidServer = 1,
+    VLNAListErrorTransport,
+    VLNAListErrorInvalidResponse,
+    VLNAListErrorUnauthorized,   // Sign in again.
+    VLNAListErrorOtpRequired,    // Ask for a two-factor code.
+    VLNAListErrorForbidden,      // No permission or wrong folder password.
+    VLNAListErrorRateLimited,
+    VLNAListErrorServer,
+};
+
+@interface VLNAListEntry : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy) NSString *path;
+@property (nonatomic, readonly, getter=isDirectory) BOOL directory;
+@property (nonatomic, readonly, getter=isPlayable) BOOL playable;
+@property (nonatomic, readonly) long long size;
+@property (nonatomic, readonly, copy) NSString *modified;  // RFC 3339.
+@end
+
+@interface VLNAListFolder : NSObject
+@property (nonatomic, readonly, copy) NSString *path;
+// Folders first, then files, each in natural order.
+@property (nonatomic, readonly, copy) NSArray<VLNAListEntry *> *entries;
+@end
+
+// "velin://alist?path=<AList path>", the link the Windows player opens too.
+FOUNDATION_EXPORT NSString *VLNAListLink(NSString *path);
+
+// Signs in to one AList server and browses it. Requests run in the
+// background; completion blocks run on the main thread. The sign-in is saved
+// encrypted (Keychain key) and restored on launch.
+@interface VLNAList : NSObject
+@property (nonatomic, readonly, getter=isSignedIn) BOOL signedIn;
+@property (nonatomic, readonly, copy) NSString *server;    // Empty before the first sign-in.
+@property (nonatomic, readonly, copy) NSString *username;
+@property (nonatomic, readonly, copy) NSString *lastFolder; // "/" when unknown.
+- (void)signInToServer:(NSString *)server username:(NSString *)username password:(NSString *)password
+               otpCode:(nullable NSString *)otpCode completion:(void (^)(NSError *_Nullable error))completion;
+- (void)signOut;
+// Remembers a folder password for the session (it also covers subfolders).
+- (void)setPassword:(NSString *)password forFolder:(NSString *)path;
+- (void)listFolder:(NSString *)path refresh:(BOOL)refresh
+        completion:(void (^)(VLNAListFolder *_Nullable folder, NSError *_Nullable error))completion;
+// Every playable file in the folder, each with its subtitle siblings, and the
+// index of path. Nil when path is not a playable file there.
+- (nullable NSArray<VLNMediaItem *> *)playlistForFolder:(VLNAListFolder *)folder
+                                             startingAt:(NSString *)path
+                                             startIndex:(NSInteger *)startIndex;
 @end
 
 // Checks that platform services work in this build: the Keychain-backed

@@ -3,6 +3,7 @@
 // Objective-C facade over velin::MediaEngine. Built with ARC.
 #import "velin/apple/VLNPlayer.h"
 
+#include "velin/alist.hpp"
 #include "velin/media_engine.hpp"
 #include "velin/system.hpp"
 
@@ -28,6 +29,30 @@ std::string mediaPath(NSURL* url) {
 }
 } // namespace
 
+@implementation VLNMediaItem
+- (instancetype)initWithURL:(NSURL*)url title:(NSString*)title {
+    if ((self = [super init])) {
+        _url = url;
+        _title = [title copy];
+        _historyKey = url.isFileURL ? url.path : url.absoluteString;
+        _subtitleURLs = @[];
+        _subtitleNames = @[];
+    }
+    return self;
+}
+@end
+
+@interface VLNPlaylistEntry ()
+- (instancetype)initWithTitle:(NSString*)title current:(BOOL)current;
+@end
+
+@implementation VLNPlaylistEntry
+- (instancetype)initWithTitle:(NSString*)title current:(BOOL)current {
+    if ((self = [super init])) { _title = [title copy]; _current = current; }
+    return self;
+}
+@end
+
 @interface VLNTrack ()
 - (instancetype)initWithTrack:(const velin::Track&)track;
 @end
@@ -49,10 +74,17 @@ std::string mediaPath(NSURL* url) {
 @implementation VLNPlayer {
     std::unique_ptr<velin::MediaEngine> _engine;
     CAMetalLayer* _layer;  // mpv holds a raw pointer to it while running.
+    // Items from -openItems:, by the path string mpv reports for them.
+    NSMutableDictionary<NSString*, VLNMediaItem*>* _items;
+    std::string _appliedPath;  // The loaded file whose subtitles and resume are applied.
 }
 
 - (instancetype)init {
-    if ((self = [super init])) _engine = std::make_unique<velin::MediaEngine>();
+    if ((self = [super init])) {
+        _engine = std::make_unique<velin::MediaEngine>();
+        _items = [NSMutableDictionary dictionary];
+        _subtitleLanguages = @"";
+    }
     return self;
 }
 
@@ -64,6 +96,10 @@ std::string mediaPath(NSURL* url) {
         // Vulkan through MoltenVK into the layer, with VideoToolbox decoding.
         configuration.options = {{"vo", "gpu-next"}, {"gpu-api", "vulkan"}, {"gpu-context", "moltenvk"}, {"hwdec", "videotoolbox"}};
     }
+    // The app resumes from Velin's history (VLNMediaItem.resumePosition),
+    // which also covers AList files whose signed URLs change.
+    configuration.options["resume-playback"] = "no";
+    configuration.options["save-position-on-quit"] = "no";
     for (NSString* key in options) configuration.options[utf8(key)] = utf8(options[key]);
     __weak VLNPlayer* weakSelf = self;
     auto wakeup = [weakSelf]() -> bool {
@@ -93,8 +129,78 @@ std::string mediaPath(NSURL* url) {
 - (void)drainEvents {
     if (!_engine->ready()) return;
     _engine->poll();
+    [self applyItemSettings];
     [self.delegate playerDidUpdate:self];
 }
+
+// When an item from -openItems: finishes loading, attach its subtitles and
+// resume it, once per load.
+- (void)applyItemSettings {
+    const auto& state = _engine->state();
+    if (state.idle) { _appliedPath.clear(); return; }
+    if (!state.loaded || state.path == _appliedPath) return;
+    _appliedPath = state.path;
+    VLNMediaItem* item = _items[ns(state.path)];
+    if (!item) return;
+    std::vector<std::string> names;
+    for (NSString* name in item.subtitleNames) names.push_back(utf8(name));
+    const auto selected = velin::alist::preferredSubtitle(names, utf8(self.subtitleLanguages));
+    for (NSUInteger i = 0; i < item.subtitleURLs.count; ++i) {
+        const std::string name = i < names.size() ? names[i] : std::string{};
+        _engine->command({"sub-add", mediaPath(item.subtitleURLs[i]), i == selected ? "select" : "auto", name});
+    }
+    if (item.resumePosition > 1) {
+        _engine->seek(item.resumePosition, true);
+        item.resumePosition = 0;  // Replaying the file later starts over.
+    }
+}
+
+- (BOOL)openItems:(NSArray<VLNMediaItem*>*)items startIndex:(NSInteger)startIndex {
+    if (items.count == 0 || startIndex < 0 || startIndex >= static_cast<NSInteger>(items.count)) return NO;
+    [_items removeAllObjects];
+    _appliedPath.clear();
+    std::vector<std::string> before, after;
+    for (NSInteger i = 0; i < static_cast<NSInteger>(items.count); ++i) {
+        const auto path = mediaPath(items[i].url);
+        _items[ns(path)] = items[i];
+        if (i < startIndex) before.push_back(path);
+        else if (i > startIndex) after.push_back(path);
+    }
+    // The chosen file first, then the ones after it, then the earlier ones
+    // moved to the front: the same order the Windows player uses.
+    if (!_engine->open({mediaPath(items[startIndex].url)}, false)) return NO;
+    if (!after.empty()) _engine->open(after, true);
+    if (!before.empty()) {
+        _engine->open(before, true);
+        const auto total = static_cast<std::int64_t>(items.count), earlier = static_cast<std::int64_t>(before.size());
+        for (std::int64_t i = 0; i < earlier; ++i) _engine->movePlaylist(total - earlier + i, i);
+    }
+    return YES;
+}
+
+- (VLNMediaItem*)currentItem {
+    const auto& path = _engine->state().path;
+    return path.empty() ? nil : _items[ns(path)];
+}
+
+- (NSArray<VLNPlaylistEntry*>*)playlist {
+    NSMutableArray<VLNPlaylistEntry*>* result = [NSMutableArray array];
+    for (const auto& entry : _engine->state().playlist) {
+        VLNMediaItem* item = _items[ns(entry.filename)];
+        NSString* title = item ? item.title : ns(entry.title);
+        if (!item && entry.title.empty()) {
+            NSString* name = ns(entry.filename).lastPathComponent;
+            title = name.stringByRemovingPercentEncoding ? name.stringByRemovingPercentEncoding : name;
+        }
+        [result addObject:[[VLNPlaylistEntry alloc] initWithTitle:title current:entry.current]];
+    }
+    return result;
+}
+
+- (NSInteger)playlistPosition { return static_cast<NSInteger>(_engine->state().playlistPosition); }
+- (void)selectPlaylistIndex:(NSInteger)index { _engine->selectPlaylist(index); }
+- (void)playNext { _engine->command({"playlist-next"}); }
+- (void)playPrevious { _engine->command({"playlist-prev"}); }
 
 - (BOOL)openURLs:(NSArray<NSURL*>*)urls append:(BOOL)append {
     std::vector<std::string> paths;
@@ -131,6 +237,9 @@ std::string mediaPath(NSURL* url) {
 - (NSString*)hardwareDecoder { return ns(_engine->state().hardwareDecoder); }
 - (NSInteger)videoWidth { return static_cast<NSInteger>(_engine->state().width); }
 - (NSInteger)videoHeight { return static_cast<NSInteger>(_engine->state().height); }
+
+- (double)speed { return _engine->state().speed; }
+- (double)volume { return _engine->state().volume; }
 
 - (NSArray<VLNTrack*>*)tracks {
     NSMutableArray<VLNTrack*>* result = [NSMutableArray array];
