@@ -22,7 +22,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     @Published private(set) var playlistPosition = -1
     @Published private(set) var speed = 1.0
     @Published private(set) var recents: [VLNHistoryEntry] = []
-    @Published var showPlayer = false
+    @Published var showPlayer = false { didSet { updateIdleTimer() } }
     @Published var zoomToFill = false { didSet { player.setProperty("panscan", value: zoomToFill ? "1.0" : "0.0") } }
 
     let settings: AppSettings
@@ -241,11 +241,22 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
         details = parts.joined(separator: " · ")
         trackHistory()
         nowPlaying.update()
+        updateIdleTimer()
         if Date().timeIntervalSince(lastLog) >= 1 {
             lastLog = Date()
             print(String(format: "VELIN state loaded=%d paused=%d position=%.2f duration=%.2f playlist=%d/%d %@ %@",
                          loaded ? 1 : 0, paused ? 1 : 0, position, duration, playlistPosition + 1, playlist.count,
                          details, errorMessage))
+        }
+    }
+
+    // Keep the screen from dimming and locking while a video plays on the
+    // player screen. Paused video, audio in the background and the home
+    // screen let the phone lock as usual.
+    private func updateIdleTimer() {
+        let keepAwake = showPlayer && loaded && !paused && player.videoWidth > 0
+        if UIApplication.shared.isIdleTimerDisabled != keepAwake {
+            UIApplication.shared.isIdleTimerDisabled = keepAwake
         }
     }
 
