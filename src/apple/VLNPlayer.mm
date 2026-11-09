@@ -79,6 +79,7 @@ std::string mediaPath(NSURL* url) {
     std::string _appliedPath;  // The loaded file whose subtitles and resume are applied.
     NSUInteger _resizeGeneration;  // Coalesces -layerDidResize calls.
     BOOL _resizeFilterOn;
+    std::string _suspendedVid;  // The vid option (JSON) to restore after -setVideoSuspended:NO.
 }
 
 - (instancetype)init {
@@ -150,6 +151,32 @@ std::string mediaPath(NSURL* url) {
     const bool ok = _resizeFilterOn ? _engine->command({"vf", "remove", "@velin-resize"})
                                     : _engine->command({"vf", "add", "@velin-resize:format=stereo-in=ab2l"});
     if (ok) _resizeFilterOn = !_resizeFilterOn;
+}
+
+// mpv's iOS advice: no video track while in the background. Setting vid
+// synchronously tears the VO (and its VkDevice) down before the app is
+// suspended, and the option also keeps files loaded in the background from
+// opening a new one. The option, not the current track, is saved: it is
+// "auto" or the track the user picked, and setting it back reselects the
+// track and makes mpv decode the current frame again, also when paused.
+- (void)setVideoSuspended:(BOOL)suspended {
+    if (suspended == _videoSuspended || !_layer || !_engine->ready()) return;
+    std::string error;
+    if (suspended) {
+        auto vid = _engine->propertyJson("options/vid");
+        if (vid == "null") vid = "\"auto\"";
+        if (!_engine->setPropertyJsonChecked("vid", "\"no\"", error)) {
+            NSLog(@"VELIN cannot suspend video: %s", error.c_str());
+            return;
+        }
+        _suspendedVid = vid;
+        _videoSuspended = YES;
+    } else {
+        _videoSuspended = NO;
+        if (!_engine->setPropertyJsonChecked("vid", _suspendedVid, error)) {
+            NSLog(@"VELIN cannot resume video: %s", error.c_str());
+        }
+    }
 }
 
 - (void)drainEvents {

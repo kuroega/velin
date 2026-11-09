@@ -36,6 +36,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     private var lastRecorded = Date.distantPast
     private var lastLog = Date.distantPast
     private var settingsObserver: AnyCancellable?
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private lazy var nowPlaying = NowPlaying(model: self)
 
     init(settings: AppSettings) {
@@ -58,6 +59,21 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
         }
         refreshRecents()
         nowPlaying.activate()
+        // GPU work from the background loses the Vulkan device, so drop the
+        // video while there; audio and Now Playing carry on. Resume only once
+        // active: during willEnterForeground the app is still in the
+        // background state. Repeated calls (Control Center) do nothing.
+        let center = NotificationCenter.default
+        lifecycleObservers = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.player.isVideoSuspended = true
+                print("VELIN video suspended for the background")
+            },
+            center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.player.isVideoSuspended = false
+                print("VELIN video resumed")
+            },
+        ]
     }
 
     private func applySettings() {

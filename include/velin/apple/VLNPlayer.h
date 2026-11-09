@@ -64,6 +64,13 @@ NS_ASSUME_NONNULL_BEGIN
 // so without this it keeps drawing at the old size. Calls are coalesced.
 - (void)layerDidResize;
 
+// iOS forbids GPU work from the background: a frame submitted then loses the
+// Vulkan device for good. Suspend video when the app enters the background
+// and resume it once the app is active again. Suspending deselects the video track
+// (vid=no), which closes mpv's video output before this returns; audio keeps
+// playing. Resuming restores the earlier selection and redraws the frame.
+@property (nonatomic, getter=isVideoSuspended) BOOL videoSuspended;
+
 // Local files or http(s) URLs.
 - (BOOL)openURLs:(NSArray<NSURL *> *)urls append:(BOOL)append;
 // Replaces the playlist with items and starts at items[startIndex]. The chosen
