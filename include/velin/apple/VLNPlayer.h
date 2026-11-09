@@ -59,6 +59,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)shutdown;
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 
+// Call after the layer's drawableSize changes (rotation, split view). mpv's
+// MoltenVK backend reads that size only when the video output reconfigures,
+// so without this it keeps drawing at the old size. Calls are coalesced.
+- (void)layerDidResize;
+
 // Local files or http(s) URLs.
 - (BOOL)openURLs:(NSArray<NSURL *> *)urls append:(BOOL)append;
 // Replaces the playlist with items and starts at items[startIndex]. The chosen

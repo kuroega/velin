@@ -77,6 +77,8 @@ std::string mediaPath(NSURL* url) {
     // Items from -openItems:, by the path string mpv reports for them.
     NSMutableDictionary<NSString*, VLNMediaItem*>* _items;
     std::string _appliedPath;  // The loaded file whose subtitles and resume are applied.
+    NSUInteger _resizeGeneration;  // Coalesces -layerDidResize calls.
+    BOOL _resizeFilterOn;
 }
 
 - (instancetype)init {
@@ -125,6 +127,30 @@ std::string mediaPath(NSURL* url) {
 }
 
 - (BOOL)isRunning { return _engine->ready(); }
+
+// The MoltenVK context in mpv 0.41 has no resize event: it reads the layer's
+// drawableSize only in reconfig, which runs when the video's parameters
+// change (see mpvkit/MPVKit#3). Adding or removing a filter that only marks
+// the video as stereo changes those parameters without changing the picture
+// (gpu-next ignores the stereo mode), so each toggle makes mpv reconfigure
+// once at the layer's current size. mpv refreshes the frame itself when paused.
+- (void)layerDidResize {
+    const NSUInteger generation = ++_resizeGeneration;
+    __weak VLNPlayer* weakSelf = self;
+    // Wait for the rotation's layout passes to settle.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        VLNPlayer* strongSelf = weakSelf;
+        if (strongSelf && strongSelf->_resizeGeneration == generation) [strongSelf reconfigureVideoOutput];
+    });
+}
+
+- (void)reconfigureVideoOutput {
+    // A file loaded later reconfigures at the then-current size anyway.
+    if (!_layer || !_engine->ready() || !_engine->state().loaded) return;
+    const bool ok = _resizeFilterOn ? _engine->command({"vf", "remove", "@velin-resize"})
+                                    : _engine->command({"vf", "add", "@velin-resize:format=stereo-in=ab2l"});
+    if (ok) _resizeFilterOn = !_resizeFilterOn;
+}
 
 - (void)drainEvents {
     if (!_engine->ready()) return;

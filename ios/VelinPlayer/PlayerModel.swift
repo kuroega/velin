@@ -42,6 +42,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
         self.settings = settings
         super.init()
         player.delegate = self
+        videoView.onResize = { [weak self] in self?.player.layerDidResize() }
         player.subtitleLanguages = settings.subtitleLanguages
         var options = settings.mpvOptions
         options.merge(Self.launchOptions()) { _, launch in launch }

@@ -16,6 +16,8 @@ final class VideoLayer: CAMetalLayer {
 final class VideoView: UIView {
     override class var layerClass: AnyClass { VideoLayer.self }
     var videoLayer: VideoLayer { layer as! VideoLayer }
+    // Called when the drawable size changes, e.g. when the phone rotates.
+    var onResize: (() -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -30,8 +32,17 @@ final class VideoView: UIView {
         super.layoutSubviews()
         let scale = window?.screen.scale ?? UIScreen.main.scale
         videoLayer.contentsScale = scale
-        videoLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+        guard size.width > 1, size.height > 1 else { return }
+        videoLayer.drawableSize = size
+        // Compare with the last size reported, not drawableSize: CAMetalLayer
+        // updates that by itself when its bounds change.
+        guard size != reportedSize else { return }
+        reportedSize = size
+        onResize?()
     }
+
+    private var reportedSize = CGSize.zero
 }
 
 // Shows the model's one video view. The engine keeps rendering into the same
