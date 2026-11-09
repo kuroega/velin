@@ -15,6 +15,7 @@ struct PlayerView: View {
     @State private var feedback: String?            // Brief centre message: "+10s", "Volume 60%".
     @State private var feedbackTask: DispatchWorkItem?
     @State private var showingPlaylist = false
+    @State private var landscape = false
 
     private enum GestureMode { case none, seek, volume, brightness }
 
@@ -36,7 +37,9 @@ struct PlayerView: View {
         }
         .statusBarHidden(!controlsVisible)
         .persistentSystemOverlays(controlsVisible ? .automatic : .hidden)
+        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
         .onAppear { scheduleHide() }
+        .onDisappear { Orientation.shared.release() }
         .onChange(of: model.paused) { _, paused in if paused { showControls(autoHide: false) } else { scheduleHide() } }
         .sheet(isPresented: $showingPlaylist) { playlistSheet }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
@@ -92,7 +95,7 @@ struct PlayerView: View {
                 }
             } label: { Label("Speed \(speedText(model.speed))", systemImage: "gauge.with.dots.needle.67percent") }
             Button { model.zoomToFill.toggle() } label: {
-                Label(model.zoomToFill ? "Fit to Screen" : "Fill Screen", systemImage: model.zoomToFill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                Label(model.zoomToFill ? "Fit to Screen" : "Fill Screen", systemImage: model.zoomToFill ? "minus.magnifyingglass" : "plus.magnifyingglass")
             }
         } label: {
             Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
@@ -142,14 +145,29 @@ struct PlayerView: View {
                 if !editing, let target = scrubbing { model.seek(to: target); scrubbing = nil; scheduleHide() }
             }
             .tint(.white)
-            HStack {
+            HStack(spacing: 12) {
                 Text(timeText(scrubbing ?? model.position))
                 Spacer()
                 Text("-" + timeText(max(model.duration - (scrubbing ?? model.position), 0)))
+                fullscreenButton
             }
             .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
         }
         .disabled(!model.loaded)
+    }
+
+    // Turns the player to landscape, or back to portrait, even with the
+    // rotation lock on.
+    private var fullscreenButton: some View {
+        Button {
+            if landscape { Orientation.shared.enterPortrait() } else { Orientation.shared.enterLandscape() }
+            scheduleHide()
+        } label: {
+            Image(systemName: landscape ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                .font(.body.weight(.semibold)).foregroundStyle(.white)
+                .frame(width: 36, height: 36).contentShape(Rectangle())
+        }
+        .accessibilityLabel(landscape ? "Exit Full Screen" : "Full Screen")
     }
 
     private var playlistSheet: some View {

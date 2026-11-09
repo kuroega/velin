@@ -6,6 +6,7 @@ import VelinCore
 
 @main
 struct VelinPlayerApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var settings: AppSettings
     @StateObject private var model: PlayerModel
     @Environment(\.scenePhase) private var scenePhase
