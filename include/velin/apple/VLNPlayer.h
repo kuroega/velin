@@ -23,6 +23,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSString *language;
 @property (nonatomic, readonly, copy) NSString *codec;
 @property (nonatomic, readonly, getter=isSelected) BOOL selected;
+// A video track that is only a still image, such as a music file's cover.
+@property (nonatomic, readonly, getter=isAlbumArt) BOOL albumArt;
 @end
 
 // Something to play: a local file or URL, plus what Velin knows about it.

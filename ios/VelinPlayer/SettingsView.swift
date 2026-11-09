@@ -12,10 +12,18 @@ struct SettingsView: View {
             Section("Playback") {
                 Toggle("Resume where I left off", isOn: $settings.resumePlayback)
                 Toggle("Play the next file automatically", isOn: $settings.autoPlayNext)
-                Toggle("Keep playing audio in the background", isOn: $settings.playInBackground)
                 Picker("Skip interval", selection: $settings.seekStep) {
                     ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) seconds").tag($0) }
                 }
+            }
+            Section {
+                Toggle("Keep playing audio in the background", isOn: $settings.playInBackground)
+                Toggle("Pause videos when I leave the app", isOn: $settings.pauseVideoInBackground)
+                    .disabled(!settings.playInBackground)
+            } header: { Text("Background") } footer: {
+                Text(settings.playInBackground
+                     ? "Leaving the app means going to the Home Screen, switching apps or locking the phone. Audio files keep playing either way."
+                     : "Everything pauses when you leave the app.")
             }
             Section {
                 TextField("Languages", text: $settings.subtitleLanguages)

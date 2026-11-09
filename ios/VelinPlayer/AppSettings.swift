@@ -13,6 +13,8 @@ final class AppSettings: ObservableObject {
     @Published var resumePlayback: Bool { didSet { defaults.set(resumePlayback, forKey: "resumePlayback") } }
     @Published var autoPlayNext: Bool { didSet { defaults.set(autoPlayNext, forKey: "autoPlayNext") } }
     @Published var playInBackground: Bool { didSet { defaults.set(playInBackground, forKey: "playInBackground") } }
+    // Leaving the app pauses files with video; audio-only files keep playing.
+    @Published var pauseVideoInBackground: Bool { didSet { defaults.set(pauseVideoInBackground, forKey: "pauseVideoInBackground") } }
 
     init() {
         defaults.register(defaults: [
@@ -22,6 +24,7 @@ final class AppSettings: ObservableObject {
             "resumePlayback": true,
             "autoPlayNext": true,
             "playInBackground": true,
+            "pauseVideoInBackground": true,
         ])
         subtitleLanguages = defaults.string(forKey: "subtitleLanguages") ?? ""
         hardwareDecoding = defaults.bool(forKey: "hardwareDecoding")
@@ -29,6 +32,7 @@ final class AppSettings: ObservableObject {
         resumePlayback = defaults.bool(forKey: "resumePlayback")
         autoPlayNext = defaults.bool(forKey: "autoPlayNext")
         playInBackground = defaults.bool(forKey: "playInBackground")
+        pauseVideoInBackground = defaults.bool(forKey: "pauseVideoInBackground")
     }
 
     // mpv options matching these settings.

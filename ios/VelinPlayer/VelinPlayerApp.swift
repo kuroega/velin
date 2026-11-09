@@ -9,7 +9,6 @@ struct VelinPlayerApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var settings: AppSettings
     @StateObject private var model: PlayerModel
-    @Environment(\.scenePhase) private var scenePhase
     @State private var path = NavigationPath()
 
     init() {
@@ -50,17 +49,17 @@ struct VelinPlayerApp: App {
             }
             .task { launchForTesting() }
         }
-        .onChange(of: scenePhase) { _, phase in
-            // Video cannot render in the background; keep the sound or pause.
-            if phase == .background && !settings.playInBackground { model.pause() }
-        }
     }
 
-    // Debug builds accept "-alistSignIn <server> <user> <password>" so the
+    // Debug builds accept "-route settings" and "-alistSignIn <server> <user> <password>" so the
     // AList flow can be tested from the command line; then "-open" runs.
     private func launchForTesting() {
         #if DEBUG
         let arguments = CommandLine.arguments
+        // "-route settings" opens the Settings screen.
+        if let index = arguments.firstIndex(of: "-route"), index + 1 < arguments.count, arguments[index + 1] == "settings" {
+            path.append(Route.settings)
+        }
         if let index = arguments.firstIndex(of: "-alistSignIn"), index + 3 < arguments.count {
             model.alist.signIn(toServer: arguments[index + 1], username: arguments[index + 2],
                                password: arguments[index + 3], otpCode: nil) { error in

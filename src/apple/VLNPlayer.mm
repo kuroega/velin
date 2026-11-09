@@ -66,6 +66,7 @@ std::string mediaPath(NSURL* url) {
         _language = ns(track.language);
         _codec = ns(track.codec);
         _selected = track.selected;
+        _albumArt = track.albumArt;
     }
     return self;
 }

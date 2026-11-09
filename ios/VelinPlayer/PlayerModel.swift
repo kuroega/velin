@@ -66,8 +66,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
         let center = NotificationCenter.default
         lifecycleObservers = [
             center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-                self?.player.isVideoSuspended = true
-                print("VELIN video suspended for the background")
+                self?.enterBackground()
             },
             center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
                 self?.player.isVideoSuspended = false
@@ -75,6 +74,19 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
             },
         ]
     }
+
+    // Home Screen, app switcher or lock: pause first when the settings say so,
+    // then stop drawing video.
+    private func enterBackground() {
+        let pausing = loaded && !paused && (!settings.playInBackground || (settings.pauseVideoInBackground && hasVideo))
+        if pausing { pause() }
+        player.isVideoSuspended = true
+        print("VELIN video suspended for the background\(pausing ? ", paused" : "")")
+    }
+
+    // Whether the current file shows a picture; a cover image in a music
+    // file does not count.
+    var hasVideo: Bool { tracks.contains { $0.type == "video" && !$0.isAlbumArt } }
 
     private func applySettings() {
         player.subtitleLanguages = settings.subtitleLanguages
