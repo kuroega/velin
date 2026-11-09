@@ -5,6 +5,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <dwmapi.h>
+#include <imm.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -263,6 +264,11 @@ int PlayerWindow::run(int showCommand, const std::vector<std::string>& paths) {
     DwmSetWindowAttribute(window_, 35, &captionColor, sizeof(captionColor));
     video_ = CreateWindowExW(0, videoType.lpszClassName, L"Video", WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
         0, 0, 1, 1, window_, nullptr, instance_, this);
+    // The player has no text fields, so an active IME (Chinese, Japanese,
+    // Korean...) would only swallow shortcut keys such as Space as
+    // VK_PROCESSKEY. Text-entry dialogs are separate windows and keep theirs.
+    ImmAssociateContextEx(window_, nullptr, 0);
+    ImmAssociateContextEx(video_, nullptr, 0);
     DragAcceptFiles(window_, TRUE);
     initializeEngine();
     platform_.initialize(window_,[this](PlatformCommand command,double value) {
@@ -315,7 +321,11 @@ int PlayerWindow::run(int showCommand, const std::vector<std::string>& paths) {
     int mouseClickCounts[3]{1,1,1};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         if ((message.message == WM_KEYDOWN || message.message == WM_KEYUP) && (message.hwnd == window_ || IsChild(window_, message.hwnd))) {
-            keyDown(message.wParam,message.message==WM_KEYUP);
+            WPARAM key=message.wParam;
+            // An IME that still sees the keystroke reports VK_PROCESSKEY;
+            // shortcuts need the key the user actually pressed.
+            if (key==VK_PROCESSKEY) if (const UINT real=ImmGetVirtualKey(message.hwnd); real && real!=VK_PROCESSKEY) key=real;
+            keyDown(key,message.message==WM_KEYUP);
             continue;
         }
         if (plugins_ && (message.hwnd==window_ || message.hwnd==video_ || (isLayerWindow(message.hwnd) && IsWindowEnabled(window_)))) {

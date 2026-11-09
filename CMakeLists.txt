@@ -119,7 +119,7 @@ if(VELIN_BUILD_PLAYER)
     endforeach()
     target_include_directories(velin PRIVATE resources third_party)
     target_link_libraries(velin PRIVATE velin_core velin_engine velin_platform velin_extensions
-        d2d1 dwrite dwmapi comctl32 comdlg32 ole32 shell32 shlwapi uuid windowscodecs user32 gdi32)
+        d2d1 dwrite dwmapi comctl32 comdlg32 ole32 shell32 shlwapi uuid windowscodecs user32 gdi32 imm32)
     if(MINGW)
         target_link_options(velin PRIVATE -municode)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
