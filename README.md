@@ -111,6 +111,7 @@ The interface and application messages currently use English.
 | `Ctrl+M`, `T` | Toggle compact mode or always on top |
 | `S`, `R`, `L` | Screenshot, repeat the current file, or set A-B loop points |
 | `Ctrl+Shift+S` | Load an external subtitle file |
+| `I` | Stats for nerds: download speed, buffer, codecs and dropped frames |
 | `Ctrl+I`, `?` | Media information or shortcut help |
 
 In Preferences > Keys, add one override per line, for example `F2=open-files`
@@ -122,7 +123,7 @@ and minus, optionally with Ctrl and/or Shift. Alt,
 Windows, and mouse bindings are not supported by this editor. Commands include
 `open-files`, `open-folder`, `open-url`, `play-pause`, `stop`, `next`, `previous`,
 `fullscreen`, `pip`, `music-mode`, `playlist`, `preferences`, `history`,
-`screenshot`, `mute`, `crop`, `inspector`, `online-subtitles`, `plugins`,
+`screenshot`, `mute`, `crop`, `inspector`, `stats`, `online-subtitles`, `plugins`,
 `quit`, `add-subtitles`, `save-playlist`, `shuffle`, `zoom-in`, and `zoom-out`.
 Other entries are sent as mpv commands; prefix `mpv:` to make this explicit.
 Built-in application commands can also be prefixed with `velin:`.

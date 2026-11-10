@@ -51,6 +51,9 @@ constexpr auto semibold = DWRITE_FONT_WEIGHT_SEMI_BOLD;
 constexpr auto centered = DWRITE_TEXT_ALIGNMENT_CENTER;
 constexpr auto trailing = DWRITE_TEXT_ALIGNMENT_TRAILING;
 constexpr float layerMargin = 18;  // Room around floating panels for their soft shadow.
+// Stats-for-nerds panel metrics.
+constexpr float statsWidth = 360, statsPad = 14, statsHeader = 26, statsTitle = 20, statsRow = 17;
+constexpr float statsGap = 6, statsGraphLabel = 16, statsGraph = 30, statsLabelWidth = 112;
 constexpr D2D1_RECT_F expand(D2D1_RECT_F r, float d) { return {r.left-d, r.top-d, r.right+d, r.bottom+d}; }
 
 constexpr auto rect(float x, float y, float w, float h) { return D2D1_RECT_F{x,y,x+w,y+h}; }
@@ -720,8 +723,8 @@ void PlayerWindow::pointerMoved() {
 bool PlayerWindow::beginLayer(LayerId id, D2D1_RECT_F bounds) {
     auto& layer=layers_[id];
     if (!layer.window) {
-        // Notices and tooltips never take input; the other layers forward theirs.
-        const DWORD style=WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|(id==NoticeLayer || id==TooltipLayer?WS_EX_TRANSPARENT:0);
+        // Notices, stats and tooltips never take input; the other layers forward theirs.
+        const DWORD style=WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|(id==NoticeLayer || id==StatsLayer || id==TooltipLayer?WS_EX_TRANSPARENT:0);
         layer.window=CreateWindowExW(style,L"Velin.Overlay",L"",WS_POPUP,0,0,1,1,window_,nullptr,instance_,this);
         if (!layer.window) return false;
     }
@@ -1103,6 +1106,66 @@ void PlayerWindow::drawNotice(D2D1_RECT_F bounds) {
     text(notice_,rect(left,bounds.top,bounds.right-left-14,bounds.bottom-bounds.top),14,ui.text,semibold);
 }
 
+void PlayerWindow::sampleStats() {
+    std::map<std::string,std::string> values;
+    for (const auto& name:streamStatsProperties()) values[name]=engine_.propertyJson(name);
+    stats_=statsSampler_.sample(values);
+    lastStatsSample_=GetTickCount64();
+}
+
+float PlayerWindow::statsHeight() const {
+    float height=statsPad*2+statsHeader;
+    for (const auto& section:stats_.sections) height+=statsTitle+statsRow*static_cast<float>(section.rows.size())+statsGap;
+    if (stats_.network && stats_.speedHistory.size()>=2) height+=2*(statsGraphLabel+statsGraph+statsGap);
+    return height;
+}
+
+void PlayerWindow::sparkline(D2D1_RECT_F area, const std::vector<double>& samples, D2D1_COLOR_F color) {
+    fill(area,ui.panel,4);
+    outline(area,ui.hairline,4);
+    if (samples.size()<2) return;
+    const double peak=std::max(1e-9,*std::max_element(samples.begin(),samples.end()));
+    // Newest sample at the right edge; a full history spans the width.
+    const float step=(area.right-area.left-4)/static_cast<float>(StreamStatsSampler::historyLength-1);
+    const float bottom=area.bottom-3, span=area.bottom-area.top-6;
+    float x=area.right-2-step*static_cast<float>(samples.size()-1);
+    auto y=[&](double value) { return bottom-static_cast<float>(value/peak)*span; };
+    for (size_t i=1;i<samples.size();++i,x+=step) line(x,y(samples[i-1]),x+step,y(samples[i]),color,1.5f);
+}
+
+void PlayerWindow::drawStats(D2D1_RECT_F bounds) {
+    hud(bounds,10);
+    const float left=bounds.left+statsPad, width=bounds.right-bounds.left-2*statsPad, limit=bounds.bottom-statsPad;
+    float y=bounds.top+statsPad;
+    text(L"Stats for nerds",rect(left,y,width,20),13,ui.text,semibold);
+    text(L"I to close",rect(left,y,width,20),11,ui.tertiary,regular,trailing);
+    y+=statsHeader;
+    for (const auto& section:stats_.sections) {
+        if (y+statsTitle+statsRow>limit) return;
+        text(fromUtf8(section.title),rect(left,y,width,statsTitle),11,ui.accent,semibold);
+        y+=statsTitle;
+        for (const auto& row:section.rows) {
+            if (y+statsRow>limit) return;
+            text(fromUtf8(row.label),rect(left,y,statsLabelWidth,statsRow),12,ui.secondary);
+            text(fromUtf8(row.value),rect(left+statsLabelWidth,y,width-statsLabelWidth,statsRow),12,ui.text);
+            y+=statsRow;
+        }
+        y+=statsGap;
+    }
+    if (!stats_.network || stats_.speedHistory.size()<2) return;
+    const auto peak=[](const std::vector<double>& samples) { return *std::max_element(samples.begin(),samples.end()); };
+    const auto graph=[&](const std::wstring& label,const std::vector<double>& samples,D2D1_COLOR_F color) {
+        if (y+statsGraphLabel+statsGraph>limit) return;
+        text(label,rect(left,y,width,statsGraphLabel),11,ui.secondary);
+        y+=statsGraphLabel;
+        sparkline(rect(left,y,width,statsGraph),samples,color);
+        y+=statsGraph+statsGap;
+    };
+    graph(L"Download speed  \u00b7  peak "+fromUtf8(formatBitRate(peak(stats_.speedHistory)*8)),stats_.speedHistory,ui.accent);
+    std::wostringstream buffered; buffered<<std::fixed<<std::setprecision(1)<<peak(stats_.bufferHistory);
+    graph(L"Buffer ahead  \u00b7  peak "+buffered.str()+L" s",stats_.bufferHistory,ui.positive);
+}
+
 void PlayerWindow::drawTooltip(D2D1_RECT_F bounds, std::wstring_view tip) {
     hud(bounds,6);
     text(tip,bounds,12,ui.text,regular,centered);
@@ -1145,6 +1208,14 @@ void PlayerWindow::draw() {
         const float w = std::min(std::max(120.f,contentRight-32), textWidth(notice_,14,semibold)+(noticeError_?48.f:32.f));
         if (beginLayer(NoticeLayer,expand(rect(16,top,w,40),layerMargin))) { drawNotice(rect(16,top,w,40)); endLayer(NoticeLayer); }
     } else hideLayer(NoticeLayer);
+    // Stats stay up while the controls hide: they are for watching playback.
+    if (live && statsVisible_ && !state.idle && !pip_) {
+        const float top=(topBar?topBarHeight:0.f)+14;
+        const float w=std::min(statsWidth,std::max(200.f,contentRight-32));
+        const float h=std::min(statsHeight(),std::max(60.f,height_-top-16));
+        const float left=std::max(16.f,contentRight-w-16);
+        if (beginLayer(StatsLayer,expand(rect(left,top,w,h),layerMargin))) { drawStats(rect(left,top,w,h)); endLayer(StatsLayer); }
+    } else hideLayer(StatsLayer);
     std::wstring tip;
     D2D1_RECT_F anchor{};
     if (chrome && dragAction_ == VolumeBar) { tip = L"Volume  "+std::to_wstring(static_cast<int>(state.volume))+L"%"; anchor = volumeTrack_; }
@@ -1332,6 +1403,9 @@ LRESULT PlayerWindow::handleMessage(UINT message,WPARAM wParam,LPARAM lParam) {
             if (!IsIconic(window_) && ((!state.idle && !state.paused && (controlsVisible_ || sidebarShown())) || (noticeUntil_>0 && GetTickCount64()>=noticeUntil_))) {
                 InvalidateRect(window_,nullptr,FALSE);
                 if (GetTickCount64()>=noticeUntil_) noticeUntil_=0;
+            }
+            if (statsVisible_ && !state.idle && !IsIconic(window_) && GetTickCount64()-lastStatsSample_>=500) {
+                sampleStats(); InvalidateRect(window_,nullptr,FALSE);
             }
             if (state.loaded && GetTickCount64()-lastPersist_>=10000) { persistPlayback(); updatePlatform(); }
         }
@@ -1665,6 +1739,11 @@ void PlayerWindow::execute(int action,int data) {
     }
     if (action>=100 && action<1000 && executeFeature(action,data)) return;
     if(action==ShowInfo){showMediaInspector(window_,engine_);return;}
+    if(action==ToggleStats){
+        statsVisible_=!statsVisible_;
+        if(statsVisible_){statsSampler_.reset();sampleStats();}
+        InvalidateRect(window_,nullptr,FALSE);return;
+    }
     if(action==VideoFilters || action==AudioFilters){showFilterManager(window_,engine_,action==AudioFilters);return;}
     if(action>=AudioDeviceBase && action<AudioDeviceBase+1000){const auto index=static_cast<size_t>(action-AudioDeviceBase);if(index<state.audioDevices.size()){preferences_.audioDevice=state.audioDevices[index].name;engine_.setProperty("audio-device",preferences_.audioDevice);}return;}
     if(action>=VideoTrackBase && action<VideoTrackBase+1000){const auto index=static_cast<size_t>(action-VideoTrackBase);engine_.setProperty("vid",index==999?"no":index<state.tracks.size()?std::to_string(state.tracks[index].id):"auto");return;}
@@ -1837,7 +1916,7 @@ void PlayerWindow::execute(int action,int data) {
             L"Page Up / Down  Previous / next chapter\n.  Frame step\n[ / ]  Change speed\nBackspace  Normal speed\n\n"
             L"F or Alt+Enter  Fullscreen\nEscape  Leave fullscreen\nP  Playlist / chapters\nCtrl+M  Compact window\nT  Always on top\n"
             L"M  Mute\nJ  Cycle subtitles\nK  Cycle audio\nV  Subtitle visibility\nZ / X  Subtitle delay\nR  Repeat file\nL  A-B loop\n"
-            L"S  Screenshot\nCtrl+I  Media information\n?  Keyboard shortcuts\n\nTab / Shift+Tab  Move through controls\nEnter  Activate focused control\n"
+            L"S  Screenshot\nI  Stats for nerds\nCtrl+I  Media information\n?  Keyboard shortcuts\n\nTab / Shift+Tab  Move through controls\nEnter  Activate focused control\n"
             L"Alt+F / P / V / A / S  Open menus\nDrop files / folders to play; Shift+drop to append.",
             L"Keyboard shortcuts",MB_OK | MB_ICONINFORMATION); break;
     case About: {
@@ -1861,7 +1940,7 @@ void PlayerWindow::showMenu(int action,POINT point) {
         static const std::map<int,std::string> commands{{OpenFiles,"open-files"},{OpenFolder,"open-folder"},{OpenUrl,"open-url"},
             {TogglePause,"play-pause"},{Stop,"stop"},{Next,"next"},{Previous,"previous"},{ToggleFullscreen,"fullscreen"},
             {PictureInPicture,"pip"},{MusicMode,"music-mode"},{TogglePlaylist,"playlist"},{PreferencesAction,"preferences"},
-            {HistoryAction,"history"},{Screenshot,"screenshot"},{ToggleMute,"mute"},{CropVideo,"crop"},{ShowInfo,"inspector"},
+            {HistoryAction,"history"},{Screenshot,"screenshot"},{ToggleMute,"mute"},{CropVideo,"crop"},{ShowInfo,"inspector"},{ToggleStats,"stats"},
             {OnlineSubtitles,"online-subtitles"},{PluginManager,"plugins"},{AddSubtitle,"add-subtitles"},{BrowseAList,"alist-browse"},
             {SavePlaylist,"save-playlist"},{ShufflePlaylist,"shuffle"},{ZoomIn,"zoom-in"},{ZoomOut,"zoom-out"}};
         auto display=label;
@@ -1962,6 +2041,7 @@ void PlayerWindow::showMenu(int action,POINT point) {
         item(ToggleWindowAspectLock,L"Lock video aspect while resizing",preferences_.lockWindowAspect);
         item(ResetVideo,L"Reset video adjustments"); separator(); item(Screenshot,L"Save screenshot\tS",false,!state.idle);
         item(ShowInfo,L"Media information\tCtrl+I",false,!state.idle);
+        item(ToggleStats,L"Stats for nerds\tI",statsVisible_,!state.idle);
     } else if (action==AudioMenu || action==SubtitleMenu) {
         const bool subtitles=action==SubtitleMenu;
         if(subtitles){
@@ -2011,7 +2091,8 @@ void PlayerWindow::showMenu(int action,POINT point) {
         item(TogglePlaylist,L"Playlist / chapters\tP",showPlaylist_);
         item(Compact,L"Compact window\tCtrl+M",compact_); item(ToggleFullscreen,L"Fullscreen\tF",fullscreen_);
         item(ToggleTopmost,L"Always on top\tT",preferences_.alwaysOnTop); separator();
-        item(ShowInfo,L"Media information\tCtrl+I",false,!state.idle); item(ShortcutHelp,L"Keyboard shortcuts\t?");
+        item(ShowInfo,L"Media information\tCtrl+I",false,!state.idle);
+        item(ToggleStats,L"Stats for nerds\tI",statsVisible_,!state.idle); item(ShortcutHelp,L"Keyboard shortcuts\t?");
     } else if (action==SpeedMenu) speedMenu();
     const UINT selected=TrackPopupMenuEx(menu,TPM_RETURNCMD | TPM_RIGHTBUTTON,point.x,point.y,window_,nullptr);
     DestroyMenu(menu);
@@ -2075,6 +2156,7 @@ void PlayerWindow::keyDown(WPARAM key, bool released) {
     case VK_ESCAPE: uiHidden_=false;if (pip_) togglePip(); else if (fullscreen_) toggleFullscreen();layoutVideo();InvalidateRect(window_,nullptr,FALSE); break;
     case 'F': execute(ToggleFullscreen); break;
     case 'P': execute(TogglePlaylist); break;
+    case 'I': execute(ToggleStats); break;
     case 'M': execute(ToggleMute); break;
     case 'T': execute(ToggleTopmost); break;
     case 'J': execute(CycleSubtitle); break;

@@ -30,7 +30,7 @@ if(WIN32)
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 endif()
 
-add_library(velin_core STATIC src/core.cpp src/player_options.cpp src/library.cpp)
+add_library(velin_core STATIC src/core.cpp src/player_options.cpp src/library.cpp src/stream_stats.cpp)
 target_include_directories(velin_core PUBLIC include PRIVATE third_party)
 target_link_libraries(velin_core PUBLIC velin_options)
 

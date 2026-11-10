@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "velin/core.hpp"
+#include "velin/stream_stats.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -232,10 +234,76 @@ void testIinaImport(const std::filesystem::path& root) {
 
 }  // namespace
 
+void testStreamStats() {
+  check(velin::formatByteSize(512) == "512 B", "Bytes");
+  check(velin::formatByteSize(1536) == "1.50 KiB", "KiB");
+  check(velin::formatByteSize(150.0 * 1024 * 1024) == "150 MiB", "MiB");
+  check(velin::formatByteSize(-1).empty(), "Negative size");
+  check(velin::formatBitRate(12.34e6) == "12.3 Mbps", "Mbps");
+  check(velin::formatBitRate(640e3) == "640 kbps", "kbps");
+  check(velin::streamSourceLabel("https://user:pw@alist.example.com:5244/d/Movies/a.mkv?sign=secret") == "alist.example.com:5244 (https)",
+        "Source shows only the host");
+  check(velin::streamSourceLabel("C:\\Videos\\a.mkv") == "Local file", "Windows path is local");
+  check(velin::streamSourceLabel("/var/mobile/a.mkv") == "Local file", "POSIX path is local");
+
+  velin::StreamStatsSampler sampler;
+  std::map<std::string, std::string> values{
+    {"path", "\"https://alist.example.com/d/a.mkv?sign=secret\""},
+    {"demuxer-via-network", "true"},
+    {"cache-speed", "1500000"},
+    {"cache-secs", "30.0"},
+    {"demuxer-max-bytes", "157286400"},
+    {"demuxer-cache-state", R"({"cache-duration":12.5,"fw-bytes":10485760,"total-bytes":20971520,"eof":false,"underrun":false,"idle":false})"},
+    {"video-codec", "\"hevc (HEVC (High Efficiency Video Coding))\""},
+    {"video-params", R"({"w":3840,"h":2160,"pixelformat":"yuv420p10","primaries":"bt.2020","gamma":"pq"})"},
+    {"video-out-params", R"({"dw":1920,"dh":1080})"},
+    {"hwdec-current", "\"videotoolbox\""},
+    {"frame-drop-count", "3"},
+    {"decoder-frame-drop-count", "0"},
+    {"avsync", "0.004"},
+    {"audio-codec-name", "\"eac3\""},
+    {"audio-params", R"({"samplerate":48000,"hr-channels":"5.1","format":"floatp"})"},
+    {"file-size", "null"}};
+  auto stats = sampler.sample(values);
+  auto find = [&](const std::string& label) {
+    for (const auto& section : stats.sections)
+      for (const auto& row : section.rows)
+        if (row.label == label) return row.value;
+    return std::string{};
+  };
+  check(stats.network, "Network stream");
+  check(find("Source") == "alist.example.com (https)", "Source row hides the signature");
+  check(find("Download") == "12.0 Mbps  (1.43 MiB/s)", "Download speed");
+  check(find("Buffer ahead") == "12.5 s of 30 s", "Buffer ahead");
+  check(find("Buffered") == "10.0 MiB of 150 MiB", "Buffered bytes");
+  check(find("State") == "Reading", "Cache state");
+  check(find("Resolution") == "3840\u00d72160  \u2192  1920\u00d71080", "Resolution");
+  check(find("Decoder") == "videotoolbox (hardware)", "Hardware decoder");
+  check(find("Codec") == "hevc", "Short codec");
+  check(find("Dropped frames") == "3 output \u00b7 0 decoder", "Dropped frames");
+  check(find("File size").empty(), "Null values are skipped");
+  check(stats.speedHistory.size() == 1 && stats.speedHistory[0] == 1500000, "Speed history");
+
+  values["paused-for-cache"] = "true";
+  values["cache-buffering-state"] = "45";
+  stats = sampler.sample(values);
+  check(find("State") == "Buffering 45%", "Buffering state");
+  check(stats.bufferHistory.size() == 2, "History grows");
+  for (std::size_t i = 0; i < 100; ++i) stats = sampler.sample(values);
+  check(stats.speedHistory.size() == velin::StreamStatsSampler::historyLength, "History is capped");
+  values["path"] = "\"/local/b.mkv\"";
+  values["demuxer-max-bytes"] = "\"150MiB\"";
+  stats = sampler.sample(values);
+  check(stats.speedHistory.size() == 1, "History restarts for a new file");
+  check(find("Buffered") == "10.0 MiB of 150 MiB", "Byte-size option as text");
+  check(find("Source") == "Local file", "Local source");
+}
+
 int main() {
   try {
     TestDirectory temporary;
     testTime();
+    testStreamStats();
     testCenteredCrop();
     testUnicode();
     testTitlesAndExtensions();

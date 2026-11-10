@@ -33,6 +33,13 @@ struct PlayerView: View {
                     .transition(.opacity)
                     .allowsHitTesting(false)
             }
+            if model.showStats {
+                // Below the top bar, so the controls stay reachable.
+                StatsOverlay(stats: model.stats) { model.showStats = false }
+                    .padding(.top, 64).padding(.leading, 16).padding(.bottom, 96)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .transition(.opacity)
+            }
             if controlsVisible { controls.transition(.opacity) }
         }
         .statusBarHidden(!controlsVisible)
@@ -44,6 +51,7 @@ struct PlayerView: View {
         .sheet(isPresented: $showingPlaylist) { playlistSheet }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
         .animation(.easeInOut(duration: 0.15), value: feedback)
+        .animation(.easeInOut(duration: 0.2), value: model.showStats)
     }
 
     // MARK: Controls
@@ -96,6 +104,9 @@ struct PlayerView: View {
             } label: { Label("Speed \(speedText(model.speed))", systemImage: "gauge.with.dots.needle.67percent") }
             Button { model.zoomToFill.toggle() } label: {
                 Label(model.zoomToFill ? "Fit to Screen" : "Fill Screen", systemImage: model.zoomToFill ? "minus.magnifyingglass" : "plus.magnifyingglass")
+            }
+            Button { model.showStats.toggle() } label: {
+                Label(model.showStats ? "Hide Stats for Nerds" : "Stats for Nerds", systemImage: "chart.xyaxis.line")
             }
         } label: {
             Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)

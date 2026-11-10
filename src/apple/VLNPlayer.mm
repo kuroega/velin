@@ -5,8 +5,10 @@
 
 #include "velin/alist.hpp"
 #include "velin/media_engine.hpp"
+#include "velin/stream_stats.hpp"
 #include "velin/system.hpp"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -72,7 +74,31 @@ std::string mediaPath(NSURL* url) {
 }
 @end
 
+@interface VLNStatsRow ()
+@property (nonatomic, readwrite, copy) NSString* label;
+@property (nonatomic, readwrite, copy) NSString* value;
+@end
+@implementation VLNStatsRow
+@end
+
+@interface VLNStatsSection ()
+@property (nonatomic, readwrite, copy) NSString* title;
+@property (nonatomic, readwrite, copy) NSArray<VLNStatsRow*>* rows;
+@end
+@implementation VLNStatsSection
+@end
+
+@interface VLNStreamStats ()
+@property (nonatomic, readwrite, copy) NSArray<VLNStatsSection*>* sections;
+@property (nonatomic, readwrite, copy) NSArray<NSNumber*>* speedHistory;
+@property (nonatomic, readwrite, copy) NSArray<NSNumber*>* bufferHistory;
+@property (nonatomic, readwrite, getter=isNetwork) BOOL network;
+@end
+@implementation VLNStreamStats
+@end
+
 @implementation VLNPlayer {
+    velin::StreamStatsSampler _statsSampler;
     std::unique_ptr<velin::MediaEngine> _engine;
     CAMetalLayer* _layer;  // mpv holds a raw pointer to it while running.
     // Items from -openItems:, by the path string mpv reports for them.
@@ -278,6 +304,39 @@ std::string mediaPath(NSURL* url) {
     const auto json = _engine->propertyJson(utf8(name));
     return json.empty() ? nil : ns(json);
 }
+
+- (VLNStreamStats*)sampleStreamStats {
+    std::map<std::string, std::string> values;
+    for (const auto& name : velin::streamStatsProperties()) values[name] = _engine->propertyJson(name);
+    const auto stats = _statsSampler.sample(values);
+    NSMutableArray<VLNStatsSection*>* sections = [NSMutableArray array];
+    for (const auto& section : stats.sections) {
+        NSMutableArray<VLNStatsRow*>* rows = [NSMutableArray array];
+        for (const auto& row : section.rows) {
+            VLNStatsRow* item = [VLNStatsRow new];
+            item.label = ns(row.label);
+            item.value = ns(row.value);
+            [rows addObject:item];
+        }
+        VLNStatsSection* item = [VLNStatsSection new];
+        item.title = ns(section.title);
+        item.rows = rows;
+        [sections addObject:item];
+    }
+    auto numbers = [](const std::vector<double>& samples) {
+        NSMutableArray<NSNumber*>* result = [NSMutableArray arrayWithCapacity:samples.size()];
+        for (const double sample : samples) [result addObject:@(sample)];
+        return result;
+    };
+    VLNStreamStats* result = [VLNStreamStats new];
+    result.sections = sections;
+    result.speedHistory = numbers(stats.speedHistory);
+    result.bufferHistory = numbers(stats.bufferHistory);
+    result.network = stats.network;
+    return result;
+}
+
++ (NSString*)formatBitRate:(double)bitsPerSecond { return ns(velin::formatBitRate(bitsPerSecond)); }
 
 - (BOOL)isIdle { return _engine->state().idle; }
 - (BOOL)isLoaded { return _engine->state().loaded; }

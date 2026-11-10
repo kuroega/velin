@@ -23,6 +23,9 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     @Published private(set) var speed = 1.0
     @Published private(set) var recents: [VLNHistoryEntry] = []
     @Published var showPlayer = false { didSet { updateIdleTimer() } }
+    // Stats for nerds, sampled twice a second while shown.
+    @Published var showStats = false { didSet { updateStatsTimer() } }
+    @Published private(set) var stats: VLNStreamStats?
     @Published var zoomToFill = false { didSet { player.setProperty("panscan", value: zoomToFill ? "1.0" : "0.0") } }
 
     let settings: AppSettings
@@ -37,6 +40,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     private var lastLog = Date.distantPast
     private var settingsObserver: AnyCancellable?
     private var lifecycleObservers: [NSObjectProtocol] = []
+    private var statsTimer: Timer?
     private lazy var nowPlaying = NowPlaying(model: self)
 
     init(settings: AppSettings) {
@@ -170,6 +174,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     }
 
     func closePlayer() {
+        showStats = false
         recordCurrent()
         player.stop()
         currentKey = nil
@@ -195,6 +200,21 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     func setSpeed(_ value: Double) { player.setProperty("speed", value: String(value)) }
     var volume: Double { player.volume }
     func setVolume(_ value: Double) { player.setProperty("volume", value: String(Int(min(max(value, 0), 100)))) }
+
+    // MARK: Stats for nerds
+
+    private func updateStatsTimer() {
+        statsTimer?.invalidate()
+        statsTimer = nil
+        guard showStats else { stats = nil; return }
+        sampleStats()
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.sampleStats() }
+    }
+
+    private func sampleStats() {
+        guard loaded, UIApplication.shared.applicationState == .active else { return }
+        stats = player.sampleStreamStats()
+    }
 
     // MARK: History
 

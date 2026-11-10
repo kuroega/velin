@@ -48,6 +48,26 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, getter=isCurrent) BOOL current;
 @end
 
+// Stats for nerds: a readable snapshot of the stream (network speed, buffer,
+// codecs, frame drops), the same rows the Windows player shows.
+@interface VLNStatsRow : NSObject
+@property (nonatomic, readonly, copy) NSString *label;
+@property (nonatomic, readonly, copy) NSString *value;
+@end
+
+@interface VLNStatsSection : NSObject
+@property (nonatomic, readonly, copy) NSString *title;
+@property (nonatomic, readonly, copy) NSArray<VLNStatsRow *> *rows;
+@end
+
+@interface VLNStreamStats : NSObject
+@property (nonatomic, readonly, copy) NSArray<VLNStatsSection *> *sections;
+// One sample per -sampleStreamStats call, oldest first; at most 60.
+@property (nonatomic, readonly, copy) NSArray<NSNumber *> *speedHistory;   // Bytes per second.
+@property (nonatomic, readonly, copy) NSArray<NSNumber *> *bufferHistory;  // Seconds ahead.
+@property (nonatomic, readonly, getter=isNetwork) BOOL network;
+@end
+
 @interface VLNPlayer : NSObject
 
 @property (nonatomic, weak, nullable) id<VLNPlayerDelegate> delegate;
@@ -96,6 +116,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setProperty:(NSString *)name value:(NSString *)value;
 // Any mpv property as JSON, or nil when unavailable.
 - (nullable NSString *)propertyJSON:(NSString *)name;
+// Reads the stream's statistics now and adds a sample to the history, which
+// restarts with each file. Call it on a timer, e.g. twice a second.
+- (VLNStreamStats *)sampleStreamStats;
+// Formats bits per second as "12.3 Mbps".
++ (NSString *)formatBitRate:(double)bitsPerSecond;
 
 @property (nonatomic, readonly, getter=isIdle) BOOL idle;
 @property (nonatomic, readonly, getter=isLoaded) BOOL loaded;

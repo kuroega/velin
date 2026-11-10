@@ -292,7 +292,7 @@ void PlayerWindow::dispatchCommand(const std::string& command) {
     static const std::map<std::string,int> commands{{"open-files",OpenFiles},{"open-folder",OpenFolder},{"open-url",OpenUrl},
         {"play-pause",TogglePause},{"stop",Stop},{"next",Next},{"previous",Previous},{"fullscreen",ToggleFullscreen},
         {"pip",PictureInPicture},{"music-mode",MusicMode},{"playlist",TogglePlaylist},{"preferences",PreferencesAction},
-        {"history",HistoryAction},{"screenshot",Screenshot},{"mute",ToggleMute},{"crop",CropVideo},{"inspector",ShowInfo},
+        {"history",HistoryAction},{"screenshot",Screenshot},{"mute",ToggleMute},{"crop",CropVideo},{"inspector",ShowInfo},{"stats",ToggleStats},
         {"online-subtitles",OnlineSubtitles},{"plugins",PluginManager},{"quit",Quit},{"add-subtitles",AddSubtitle},
         {"save-playlist",SavePlaylist},{"shuffle",ShufflePlaylist},{"zoom-in",ZoomIn},{"zoom-out",ZoomOut},
         {"alist-browse",BrowseAList},{"alist-sign-out",SignOutAList}};

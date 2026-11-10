@@ -8,6 +8,7 @@
 #include "velin/accessibility.hpp"
 #include "velin/extensions.hpp"
 #include "velin/alist.hpp"
+#include "velin/stream_stats.hpp"
 #include "velin/plugin_webview.hpp"
 #include "velin/tool_windows.hpp"
 #include <climits>
@@ -53,7 +54,7 @@ private:
         ReloadPlugins, PluginConsole, OnlineSubtitles, CheckUpdates, InstallUpdate, MediaLog,
         CopyScreenshot, RecognizeText, RegisterAssociations, UnregisterAssociations,
         CustomCropAspect, JumpToBeginning, VideoFilters, AudioFilters, OpenScreenshotFolder,
-        BrowseAList, SignOutAList,
+        BrowseAList, SignOutAList, ToggleStats,
         SpeedBase = 1000, AudioBase = 2000, SubtitleBase = 3000,
         ChapterBase = 4000, RecentBase = 5000, AspectBase = 6000,
         PluginMenuBase=7000,AudioDeviceBase=8000,VideoTrackBase=9000,SecondarySubtitleBase=10000,
@@ -62,12 +63,13 @@ private:
     struct Hit { D2D1_RECT_F rect; int action; int data; std::wstring hint; };
     // Layout metrics in device-independent pixels. The video fills the client
     // area beside the docked sidebar; the top bar, controller, notices and
-    // tooltips float above it in layered overlay windows (see Layer).
+    // tooltips float above it in layered overlay windows (see Layer), as does
+    // the stats-for-nerds panel.
     static constexpr float topBarHeight = 38, sidebarThreshold = 360;
     static constexpr float minWindowWidth = 560, minWindowHeight = 360;
     // Each overlay is an owned, per-pixel-alpha popup aligned to the client
     // area. Transparent pixels let input fall through to the video beneath.
-    enum LayerId { TopBarLayer, ControlLayer, NoticeLayer, TooltipLayer, LayerCount };
+    enum LayerId { TopBarLayer, ControlLayer, NoticeLayer, StatsLayer, TooltipLayer, LayerCount };
     struct Layer {
         HWND window{};
         HDC dc{};
@@ -160,6 +162,11 @@ private:
     void drawWelcome(D2D1_RECT_F area);
     void drawNowPlaying(D2D1_RECT_F area);
     void drawNotice(D2D1_RECT_F bounds);
+    // Stats for nerds (I): live stream statistics over the video.
+    void sampleStats();
+    float statsHeight() const;
+    void drawStats(D2D1_RECT_F bounds);
+    void sparkline(D2D1_RECT_F area, const std::vector<double>& samples, D2D1_COLOR_F color);
     void drawTooltip(D2D1_RECT_F bounds, std::wstring_view tip);
     void hud(D2D1_RECT_F rect, float radius, bool shadow = true);
     void slider(int action, D2D1_RECT_F track, double fraction, std::wstring hint);
@@ -256,6 +263,10 @@ private:
     std::wstring notice_;
     ULONGLONG noticeUntil_ = 0;
     bool noticeError_ = false;
+    StreamStatsSampler statsSampler_;
+    StreamStats stats_;
+    bool statsVisible_ = false;
+    ULONGLONG lastStatsSample_ = 0;
 };
 
 } // namespace velin
