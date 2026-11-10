@@ -143,9 +143,13 @@ std::string graphicsApi(const std::string& context, const std::string& api) {
 
 } // namespace
 
+namespace {
+constexpr double maxShownBufferTarget = 24 * 60 * 60;
+} // namespace
+
 const std::vector<std::string>& streamStatsProperties() {
     static const std::vector<std::string> names{
-        "path", "file-format", "file-size", "demuxer-via-network", "demuxer-cache-state", "cache-speed",
+        "path", "file-format", "file-size", "duration", "demuxer-via-network", "demuxer-cache-state", "cache-speed",
         "cache-buffering-state", "paused-for-cache", "demuxer-max-bytes", "cache-secs",
         "video-codec", "video-params", "video-out-params", "hwdec-current", "current-vo",
         "container-fps", "estimated-vf-fps", "display-fps", "video-bitrate",
@@ -239,7 +243,9 @@ StreamStats StreamStatsSampler::sample(const std::map<std::string, std::string>&
         if (ahead >= 0) {
             std::string value = printf1("%.1f s", ahead);
             const double target = numberOr(values.get("cache-secs"), -1);
-            if (target > 0 && stats.network) value += printf1(" of %.0f s", target);
+            // mpv's default is 1000 hours, and the byte limit binds long before
+            // it; only a target someone actually set says anything.
+            if (target > 0 && target <= maxShownBufferTarget && stats.network) value += printf1(" of %.0f s", target);
             add(section.rows, "Buffer ahead", value);
         }
         double forward = 0;
@@ -289,8 +295,14 @@ StreamStats StreamStatsSampler::sample(const std::map<std::string, std::string>&
         if (number(values.get("estimated-vf-fps"), rate) && rate > 0) rates.push_back(fps(rate) + " measured");
         add(section.rows, "Frame rate", join(rates));
         if (number(values.get("display-fps"), rate) && rate > 0) add(section.rows, "Display", printf1("%.2f Hz", rate));
-        double bits = 0;
-        if (number(values.get("video-bitrate"), bits) && bits > 0) add(section.rows, "Bitrate", formatBitRate(bits));
+        // mpv measures video-bitrate over the last keyframe interval only, so a
+        // dark or still scene can read a few kbps; the file average (all
+        // streams) puts it in proportion.
+        double bits = 0, size = 0, length = 0;
+        const bool current = number(values.get("video-bitrate"), bits) && bits > 0;
+        const bool average = number(values.get("file-size"), size) && size > 0 && number(values.get("duration"), length) && length > 0;
+        add(section.rows, "Bitrate", join({current ? formatBitRate(bits) + " now" : "",
+                                           average ? formatBitRate(size * 8 / length) + " file avg" : ""}));
         auto format = text(member(video, "pixelformat"));
         if (const auto hw = text(member(video, "hw-pixelformat")); !hw.empty()) format += " (" + hw + ")";
         add(section.rows, "Pixel format", format);

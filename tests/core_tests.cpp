@@ -313,6 +313,17 @@ void testStreamStats() {
   stats = sampler.sample(values);
   check(find("Renderer") == "gpu-next", "Renderer without a known API");
   check(find("Decoding") == "software (CPU)", "Software decoding");
+  values["path"] = "\"https://alist.example.com/d/a.mkv\"";
+  values["cache-secs"] = "3600000";
+  values["video-bitrate"] = "66000";
+  values["file-size"] = "8396800000";
+  values["duration"] = "3267.6";
+  stats = sampler.sample(values);
+  check(find("Buffer ahead") == "12.5 s", "mpv's default buffer target is hidden");
+  check(find("Bitrate") == "66 kbps now \u00b7 20.6 Mbps file avg", "Video bitrate with the file average");
+  values["video-bitrate"] = "null";
+  stats = sampler.sample(values);
+  check(find("Bitrate") == "20.6 Mbps file avg", "File average alone");
 }
 
 int main() {
