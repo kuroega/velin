@@ -263,7 +263,12 @@ void testStreamStats() {
     {"avsync", "0.004"},
     {"audio-codec-name", "\"eac3\""},
     {"audio-params", R"({"samplerate":48000,"hr-channels":"5.1","format":"floatp"})"},
-    {"file-size", "null"}};
+    {"file-size", "null"},
+    {"mpv-version", "\"mpv v0.40.0\""},
+    {"ffmpeg-version", "\"n7.1\""},
+    {"current-vo", "\"gpu-next\""},
+    {"current-gpu-context", "\"d3d11\""},
+    {"current-ao", "\"wasapi\""}};
   auto stats = sampler.sample(values);
   auto find = [&](const std::string& label) {
     for (const auto& section : stats.sections)
@@ -278,7 +283,12 @@ void testStreamStats() {
   check(find("Buffered") == "10.0 MiB of 150 MiB", "Buffered bytes");
   check(find("State") == "Reading", "Cache state");
   check(find("Resolution") == "3840\u00d72160  \u2192  1920\u00d71080", "Resolution");
-  check(find("Decoder") == "videotoolbox (hardware)", "Hardware decoder");
+  check(stats.sections.front().title == "Engine", "Engine comes first");
+  check(find("Player") == "mpv 0.40.0", "Engine version");
+  check(find("FFmpeg") == "7.1", "FFmpeg version");
+  check(find("Renderer") == "gpu-next \u00b7 Direct3D 11", "Renderer and graphics API");
+  check(find("Decoding") == "hardware (videotoolbox)", "Hardware decoding");
+  check(find("Audio out") == "wasapi", "Audio output");
   check(find("Codec") == "hevc", "Short codec");
   check(find("Dropped frames") == "3 output \u00b7 0 decoder", "Dropped frames");
   check(find("File size").empty(), "Null values are skipped");
@@ -297,6 +307,12 @@ void testStreamStats() {
   check(stats.speedHistory.size() == 1, "History restarts for a new file");
   check(find("Buffered") == "10.0 MiB of 150 MiB", "Byte-size option as text");
   check(find("Source") == "Local file", "Local source");
+  values["current-gpu-context"] = "null";
+  values["gpu-api"] = "\"auto\"";
+  values["hwdec-current"] = "\"no\"";
+  stats = sampler.sample(values);
+  check(find("Renderer") == "gpu-next", "Renderer without a known API");
+  check(find("Decoding") == "software (CPU)", "Software decoding");
 }
 
 int main() {

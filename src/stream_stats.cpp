@@ -114,6 +114,33 @@ std::string join(const std::vector<std::string>& parts, const char* separator = 
     return result;
 }
 
+// "mpv v0.40.0-dirty" or "0.40.0" -> "mpv 0.40.0-dirty".
+std::string engineVersion(std::string version) {
+    if (version.empty()) return {};
+    if (version.rfind("mpv ", 0) == 0) version.erase(0, 4);
+    if (version.size() > 1 && version[0] == 'v' && std::isdigit(static_cast<unsigned char>(version[1]))) version.erase(0, 1);
+    return "mpv " + version;
+}
+
+// FFmpeg release tags start with "n": "n7.1" -> "7.1".
+std::string ffmpegVersion(std::string version) {
+    if (version.size() > 1 && version[0] == 'n' && std::isdigit(static_cast<unsigned char>(version[1]))) version.erase(0, 1);
+    return version;
+}
+
+// mpv's GPU context or API names, as people know them.
+std::string graphicsApi(const std::string& context, const std::string& api) {
+    static const std::map<std::string, std::string> names{
+        {"d3d11", "Direct3D 11"}, {"moltenvk", "Vulkan via MoltenVK"}, {"macvk", "Vulkan via MoltenVK"},
+        {"winvk", "Vulkan"}, {"vulkan", "Vulkan"}, {"waylandvk", "Vulkan"}, {"x11vk", "Vulkan"}, {"androidvk", "Vulkan"},
+        {"displayvk", "Vulkan"}, {"angle", "OpenGL ES via ANGLE"}, {"win", "OpenGL"}, {"dxinterop", "OpenGL"},
+        {"opengl", "OpenGL"}, {"cocoa", "OpenGL"}};
+    const auto& name = context.empty() || context == "auto" ? api : context;
+    if (name.empty() || name == "auto") return {};
+    const auto found = names.find(name);
+    return found == names.end() ? name : found->second;
+}
+
 } // namespace
 
 const std::vector<std::string>& streamStatsProperties() {
@@ -123,7 +150,8 @@ const std::vector<std::string>& streamStatsProperties() {
         "video-codec", "video-params", "video-out-params", "hwdec-current", "current-vo",
         "container-fps", "estimated-vf-fps", "display-fps", "video-bitrate",
         "audio-codec-name", "audio-params", "audio-bitrate", "current-ao",
-        "frame-drop-count", "decoder-frame-drop-count", "vo-delayed-frame-count", "avsync", "speed"};
+        "frame-drop-count", "decoder-frame-drop-count", "vo-delayed-frame-count", "avsync", "speed",
+        "mpv-version", "ffmpeg-version", "current-gpu-context", "gpu-api"};
     return names;
 }
 
@@ -174,6 +202,21 @@ StreamStats StreamStatsSampler::sample(const std::map<std::string, std::string>&
 
     const Json& cache = values.get("demuxer-cache-state");
     stats.network = flag(values.get("demuxer-via-network"));
+
+    // Engine: what plays the stream. Velin always plays through libmpv.
+    {
+        StatsSection section{"Engine", {}};
+        add(section.rows, "Player", engineVersion(text(values.get("mpv-version"))));
+        add(section.rows, "FFmpeg", ffmpegVersion(text(values.get("ffmpeg-version"))));
+        add(section.rows, "Renderer", join({text(values.get("current-vo")),
+            graphicsApi(text(values.get("current-gpu-context")), text(values.get("gpu-api")))}));
+        if (values.get("video-params").is_object()) {
+            const auto hwdec = text(values.get("hwdec-current"));
+            add(section.rows, "Decoding", hwdec.empty() || hwdec == "no" ? "software (CPU)" : "hardware (" + hwdec + ")");
+        }
+        add(section.rows, "Audio out", text(values.get("current-ao")));
+        if (!section.rows.empty()) stats.sections.push_back(std::move(section));
+    }
 
     // Source
     {
@@ -248,14 +291,11 @@ StreamStats StreamStatsSampler::sample(const std::map<std::string, std::string>&
         if (number(values.get("display-fps"), rate) && rate > 0) add(section.rows, "Display", printf1("%.2f Hz", rate));
         double bits = 0;
         if (number(values.get("video-bitrate"), bits) && bits > 0) add(section.rows, "Bitrate", formatBitRate(bits));
-        const auto hwdec = text(values.get("hwdec-current"));
-        add(section.rows, "Decoder", hwdec.empty() || hwdec == "no" ? "software" : hwdec + " (hardware)");
         auto format = text(member(video, "pixelformat"));
         if (const auto hw = text(member(video, "hw-pixelformat")); !hw.empty()) format += " (" + hw + ")";
         add(section.rows, "Pixel format", format);
         add(section.rows, "Color", join({text(member(video, "colormatrix")), text(member(video, "primaries")),
                                          text(member(video, "gamma")), text(member(video, "colorlevels"))}, " / "));
-        add(section.rows, "Output", text(values.get("current-vo")));
         stats.sections.push_back(std::move(section));
     }
 
@@ -270,7 +310,6 @@ StreamStats StreamStatsSampler::sample(const std::map<std::string, std::string>&
                                           channels(audio), text(member(audio, "format"))}));
         double bits = 0;
         if (number(values.get("audio-bitrate"), bits) && bits > 0) add(section.rows, "Bitrate", formatBitRate(bits));
-        add(section.rows, "Output", text(values.get("current-ao")));
         if (!section.rows.empty()) stats.sections.push_back(std::move(section));
     }
 
