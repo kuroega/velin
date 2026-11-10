@@ -39,7 +39,7 @@ struct PlayerView: View {
         .persistentSystemOverlays(controlsVisible ? .automatic : .hidden)
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
         .onAppear { scheduleHide() }
-        .onDisappear { Orientation.shared.release() }
+        .onDisappear { Orientation.shared.leavePlayer() }
         .onChange(of: model.paused) { _, paused in if paused { showControls(autoHide: false) } else { scheduleHide() } }
         .sheet(isPresented: $showingPlaylist) { playlistSheet }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
@@ -65,7 +65,7 @@ struct PlayerView: View {
 
     private var topBar: some View {
         HStack(alignment: .top, spacing: 12) {
-            Button { model.closePlayer() } label: {
+            Button { Orientation.shared.leavePlayer(); model.closePlayer() } label: {
                 Image(systemName: "chevron.down").font(.title2.weight(.semibold)).frame(width: 44, height: 44)
             }
             VStack(alignment: .leading, spacing: 2) {

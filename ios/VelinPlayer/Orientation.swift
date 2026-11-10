@@ -31,7 +31,18 @@ final class Orientation {
 
     func enterPortrait() { force(.portrait, keep: .portrait) }
 
-    // Back to auto-rotation, e.g. when the player closes.
+    // The player is closing: back to auto-rotation, with the screens behind it
+    // following the rotation lock. iOS does not expose the lock, but with it on
+    // the device keeps reporting portrait, so only then is portrait requested;
+    // without the request a forced landscape would linger on the home screen.
+    // With the lock off (held sideways, or lying flat) the current orientation
+    // is kept and normal auto-rotation carries on from there.
+    func leavePlayer() {
+        forced = nil
+        update(request: UIDevice.current.orientation == .portrait ? .portrait : nil)
+    }
+
+    // Back to auto-rotation.
     func release() {
         guard forced != nil else { return }
         forced = nil
