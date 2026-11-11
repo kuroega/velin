@@ -6,13 +6,25 @@ import MediaPlayer
 import UIKit
 import VelinCore
 
+// The playback position, apart from PlayerModel so that only the seek bar is
+// redrawn as it moves. Published in quarter-second steps: the engine reports
+// a new position for every video frame.
+final class PlaybackClock: ObservableObject {
+    @Published fileprivate(set) var position = 0.0
+
+    fileprivate func update(_ value: Double, exact: Bool) {
+        if exact ? value != position : abs(value - position) >= 0.25 { position = value }
+    }
+}
+
 // Owns the engine, the one video view it renders into, playback history and
 // the AList connection. Everything runs on the main thread.
 final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     @Published private(set) var running = false
     @Published private(set) var loaded = false
     @Published private(set) var paused = false
-    @Published private(set) var position = 0.0
+    private(set) var position = 0.0  // Exact and unpublished; views watch `clock`.
+    let clock = PlaybackClock()
     @Published private(set) var duration = 0.0
     @Published private(set) var title = ""
     @Published private(set) var details = ""
@@ -41,6 +53,10 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     private var settingsObserver: AnyCancellable?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var statsTimer: Timer?
+    private var lastRefresh = 0.0
+    private var refreshTask: DispatchWorkItem?
+    private var tracksRevision = UInt.max
+    private var playlistRevision = UInt.max
     private lazy var nowPlaying = NowPlaying(model: self)
 
     init(settings: AppSettings) {
@@ -242,32 +258,69 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
 
     // MARK: VLNPlayerDelegate
 
+    // Called for every engine event, which during playback means every video
+    // frame. Publishing anything here redraws the views that watch the model,
+    // so a frame only moves the clock; everything else is refreshed when
+    // playback starts, stops or changes file, and otherwise four times a second.
     func playerDidUpdate(_ player: VLNPlayer) {
-        loaded = player.isLoaded
-        paused = player.isPaused
+        let stateChanged = loaded != player.isLoaded || paused != player.isPaused
+            || playlistPosition != player.playlistPosition
         position = player.position
-        duration = player.duration
-        speed = player.speed
-        title = player.currentItem?.title ?? player.title
-        tracks = player.tracks
-        playlist = player.playlist
-        playlistPosition = player.playlistPosition
-        if !player.errorMessage.isEmpty { errorMessage = player.errorMessage }
+        clock.update(position, exact: stateChanged || player.isPaused)
+        let wait = lastRefresh + 0.25 - CACurrentMediaTime()
+        if stateChanged || wait <= 0 {
+            refresh()
+        } else if refreshTask == nil {
+            // The last event before the engine goes quiet (paused, a track
+            // picked) must still be shown.
+            let task = DispatchWorkItem { [weak self] in self?.refresh() }
+            refreshTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: task)
+        }
+    }
+
+    private func refresh() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        lastRefresh = CACurrentMediaTime()
+        assign(\.loaded, player.isLoaded)
+        assign(\.paused, player.isPaused)
+        assign(\.duration, player.duration)
+        assign(\.speed, player.speed)
+        assign(\.title, player.currentItem?.title ?? player.title)
+        if tracksRevision != player.tracksRevision {
+            tracksRevision = player.tracksRevision
+            tracks = player.tracks
+        }
+        if playlistRevision != player.playlistRevision {
+            playlistRevision = player.playlistRevision
+            playlist = player.playlist
+        }
+        assign(\.playlistPosition, player.playlistPosition)
+        if !player.errorMessage.isEmpty { assign(\.errorMessage, player.errorMessage) }
         var parts: [String] = []
         if player.videoWidth > 0 { parts.append("\(player.videoWidth)×\(player.videoHeight)") }
         if !player.videoCodec.isEmpty { parts.append(player.videoCodec.components(separatedBy: " (").first ?? player.videoCodec) }
         parts.append(player.hardwareDecoder.isEmpty ? "software decoding" : "hwdec \(player.hardwareDecoder)")
         if !player.audioCodec.isEmpty { parts.append(player.audioCodec) }
-        details = parts.joined(separator: " · ")
+        assign(\.details, parts.joined(separator: " · "))
         trackHistory()
         nowPlaying.update()
         updateIdleTimer()
+        #if DEBUG
         if Date().timeIntervalSince(lastLog) >= 1 {
             lastLog = Date()
             print(String(format: "VELIN state loaded=%d paused=%d position=%.2f duration=%.2f playlist=%d/%d %@ %@",
                          loaded ? 1 : 0, paused ? 1 : 0, position, duration, playlistPosition + 1, playlist.count,
                          details, errorMessage))
         }
+        #endif
+    }
+
+    // Publishes only real changes: every assignment to a published property
+    // redraws the views watching the model, even when the value is the same.
+    private func assign<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<PlayerModel, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     // Keep the screen from dimming and locking while a video plays on the

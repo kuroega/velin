@@ -150,21 +150,10 @@ struct PlayerView: View {
     }
 
     private var bottomBar: some View {
-        VStack(spacing: 4) {
-            Slider(value: Binding(get: { scrubbing ?? model.position }, set: { scrubbing = $0; showControls(autoHide: false) }),
-                   in: 0...max(model.duration, 1)) { editing in
-                if !editing, let target = scrubbing { model.seek(to: target); scrubbing = nil; scheduleHide() }
-            }
-            .tint(.white)
-            HStack(spacing: 12) {
-                Text(timeText(scrubbing ?? model.position))
-                Spacer()
-                Text("-" + timeText(max(model.duration - (scrubbing ?? model.position), 0)))
-                fullscreenButton
-            }
-            .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
-        }
-        .disabled(!model.loaded)
+        SeekBar(clock: model.clock, duration: model.duration, scrubbing: $scrubbing,
+                onScrub: { showControls(autoHide: false) },
+                onCommit: { model.seek(to: $0); scheduleHide() }) { fullscreenButton }
+            .disabled(!model.loaded)
     }
 
     // Turns the player to landscape, or back to portrait, even with the
@@ -307,6 +296,35 @@ struct PlayerView: View {
 
     private func speedText(_ value: Double) -> String {
         value == value.rounded() ? String(format: "%.0f×", value) : String(format: "%g×", value)
+    }
+}
+
+// The slider and the times. The only view that watches the playback clock,
+// so nothing else is redrawn as the position moves, and nothing at all while
+// the controls are hidden.
+private struct SeekBar<Trailing: View>: View {
+    @ObservedObject var clock: PlaybackClock
+    let duration: Double
+    @Binding var scrubbing: Double?
+    var onScrub: () -> Void
+    var onCommit: (Double) -> Void
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        let position = scrubbing ?? clock.position
+        VStack(spacing: 4) {
+            Slider(value: Binding(get: { position }, set: { scrubbing = $0; onScrub() }), in: 0...max(duration, 1)) { editing in
+                if !editing, let target = scrubbing { onCommit(target); scrubbing = nil }
+            }
+            .tint(.white)
+            HStack(spacing: 12) {
+                Text(timeText(position))
+                Spacer()
+                Text("-" + timeText(max(duration - position, 0)))
+                trailing
+            }
+            .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
+        }
     }
 }
 

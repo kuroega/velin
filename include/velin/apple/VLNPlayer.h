@@ -102,6 +102,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) VLNMediaItem *currentItem;
 @property (nonatomic, readonly, copy) NSArray<VLNPlaylistEntry *> *playlist;
 @property (nonatomic, readonly) NSInteger playlistPosition;
+// Each goes up when -tracks or -playlist would return something different, so
+// a delegate can skip rebuilding them on the many updates that only move the
+// position.
+@property (nonatomic, readonly) NSUInteger tracksRevision;
+@property (nonatomic, readonly) NSUInteger playlistRevision;
 - (void)selectPlaylistIndex:(NSInteger)index;
 - (void)playNext;
 - (void)playPrevious;

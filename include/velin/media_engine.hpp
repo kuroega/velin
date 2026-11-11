@@ -34,6 +34,7 @@ struct Track {
     bool selected = false;
     bool external = false;
     bool albumArt = false;
+    bool operator==(const Track&) const = default;
 };
 
 struct Chapter {
@@ -45,6 +46,7 @@ struct PlaylistItem {
     std::string filename;
     std::string title;
     bool current = false;
+    bool operator==(const PlaylistItem&) const = default;
 };
 
 struct EngineConfiguration {

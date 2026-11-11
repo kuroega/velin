@@ -6,6 +6,21 @@ import MediaPlayer
 final class NowPlaying {
     private unowned let model: PlayerModel
     private var lastTitle = ""
+    // What the system was last told, and when.
+    private var sent: Sent?
+
+    private struct Sent: Equatable {
+        var title: String, duration: Double, rate: Double, queueIndex: Int, queueCount: Int
+        var position = 0.0, time = 0.0
+
+        // The system advances the elapsed time by itself from the rate, so a
+        // new position is only worth sending after a seek or a stall.
+        func covers(_ other: Sent) -> Bool {
+            title == other.title && duration == other.duration && rate == other.rate
+                && queueIndex == other.queueIndex && queueCount == other.queueCount
+                && abs(position + (other.time - time) * rate - other.position) < 1
+        }
+    }
 
     init(model: PlayerModel) { self.model = model }
 
@@ -39,6 +54,11 @@ final class NowPlaying {
 
     func update() {
         guard model.loaded else { return }
+        let state = Sent(title: model.title, duration: model.duration, rate: model.paused ? 0.0 : model.speed,
+                         queueIndex: model.playlistPosition, queueCount: model.playlist.count,
+                         position: model.position, time: CACurrentMediaTime())
+        if let sent, sent.covers(state) { return }
+        sent = state
         let center = MPRemoteCommandCenter.shared()
         center.nextTrackCommand.isEnabled = model.playlistPosition + 1 < model.playlist.count
         center.previousTrackCommand.isEnabled = model.playlistPosition > 0
@@ -60,6 +80,7 @@ final class NowPlaying {
 
     func clear() {
         lastTitle = ""
+        sent = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         MPNowPlayingInfoCenter.default().playbackState = .stopped
     }

@@ -107,6 +107,8 @@ std::string mediaPath(NSURL* url) {
     NSUInteger _resizeGeneration;  // Coalesces -layerDidResize calls.
     BOOL _resizeFilterOn;
     std::string _suspendedVid;  // The vid option (JSON) to restore after -setVideoSuspended:NO.
+    std::vector<velin::Track> _seenTracks;          // What the revisions below describe.
+    std::vector<velin::PlaylistItem> _seenPlaylist;
 }
 
 - (instancetype)init {
@@ -125,6 +127,16 @@ std::string mediaPath(NSURL* url) {
     if (layer) {
         // Vulkan through MoltenVK into the layer, with VideoToolbox decoding.
         configuration.options = {{"vo", "gpu-next"}, {"gpu-api", "vulkan"}, {"gpu-context", "moltenvk"}, {"hwdec", "videotoolbox"}};
+        // Battery and heat: mpv's desktop defaults (Lanczos scaling in linear
+        // or sigmoid light, HDR peak detection in a compute shader) keep the
+        // phone's GPU busy on every frame for a difference a 460 ppi screen
+        // does not show. These are mpv's "fast" profile, minus its dither=no:
+        // dithering is nearly free and hides banding from 10-bit video.
+        const std::pair<const char*, const char*> lowPower[] = {
+            {"scale", "bilinear"}, {"dscale", "bilinear"}, {"correct-downscaling", "no"},
+            {"linear-downscaling", "no"}, {"sigmoid-upscaling", "no"},
+            {"hdr-compute-peak", "no"}, {"allow-delayed-peak-detect", "yes"}};
+        for (const auto& [name, value] : lowPower) configuration.options[name] = value;
     }
     // The app resumes from Velin's history (VLNMediaItem.resumePosition),
     // which also covers AList files whose signed URLs change.
@@ -209,6 +221,9 @@ std::string mediaPath(NSURL* url) {
 - (void)drainEvents {
     if (!_engine->ready()) return;
     _engine->poll();
+    const auto& state = _engine->state();
+    if (state.tracks != _seenTracks) { _seenTracks = state.tracks; ++_tracksRevision; }
+    if (state.playlist != _seenPlaylist) { _seenPlaylist = state.playlist; ++_playlistRevision; }
     [self applyItemSettings];
     [self.delegate playerDidUpdate:self];
 }
@@ -239,6 +254,7 @@ std::string mediaPath(NSURL* url) {
     if (items.count == 0 || startIndex < 0 || startIndex >= static_cast<NSInteger>(items.count)) return NO;
     [_items removeAllObjects];
     _appliedPath.clear();
+    ++_playlistRevision;  // Titles come from the items.
     std::vector<std::string> before, after;
     for (NSInteger i = 0; i < static_cast<NSInteger>(items.count); ++i) {
         const auto path = mediaPath(items[i].url);
