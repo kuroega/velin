@@ -16,6 +16,7 @@ struct PlayerView: View {
     @State private var feedbackTask: DispatchWorkItem?
     @State private var showingPlaylist = false
     @State private var landscape = false
+    @State private var locked = false               // Screen lock: touches only reveal the unlock button.
 
     private enum GestureMode { case none, seek, volume, brightness }
 
@@ -39,15 +40,22 @@ struct PlayerView: View {
                     .padding(.top, 64).padding(.leading, 16).padding(.bottom, 96)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .transition(.opacity)
+                    .allowsHitTesting(!locked)
             }
-            if controlsVisible { controls.transition(.opacity) }
+            if controlsVisible {
+                if !locked { controls.transition(.opacity) }
+                if model.loaded { lockButton.transition(.opacity) }
+            }
         }
-        .statusBarHidden(!controlsVisible)
-        .persistentSystemOverlays(controlsVisible ? .automatic : .hidden)
+        .statusBarHidden(!controlsVisible || locked)
+        .persistentSystemOverlays(controlsVisible && !locked ? .automatic : .hidden)
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
         .onAppear { scheduleHide() }
         .onDisappear { Orientation.shared.leavePlayer() }
-        .onChange(of: model.paused) { _, paused in if paused { showControls(autoHide: false) } else { scheduleHide() } }
+        .onChange(of: model.paused) { _, paused in
+            guard !locked else { return }
+            if paused { showControls(autoHide: false) } else { scheduleHide() }
+        }
         .sheet(isPresented: $showingPlaylist) { playlistSheet }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
         .animation(.easeInOut(duration: 0.15), value: feedback)
@@ -156,6 +164,37 @@ struct PlayerView: View {
             .disabled(!model.loaded)
     }
 
+    // Locks the screen against stray touches, or unlocks it. Sits on the left
+    // edge, in the same place with the controls and alone while locked. In
+    // portrait the centre buttons span the full width, so it sits just above
+    // the seek bar instead.
+    private var lockButton: some View {
+        Button { setLocked(!locked) } label: {
+            Image(systemName: locked ? "lock.fill" : "lock.open.fill")
+                .font(.title3.weight(.semibold)).foregroundStyle(.white)
+                .frame(width: 48, height: 48)
+                .background(.ultraThinMaterial, in: Circle())
+                .contentShape(Circle())
+        }
+        .padding(.leading, 16)
+        .padding(.bottom, landscape ? 0 : 84)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: landscape ? .leading : .bottomLeading)
+        .accessibilityLabel(locked ? "Unlock Screen" : "Lock Screen")
+    }
+
+    private func setLocked(_ value: Bool) {
+        locked = value
+        if value {
+            Orientation.shared.hold()
+            showingPlaylist = false
+            flash("Screen Locked")
+        } else {
+            Orientation.shared.unhold()
+            flash("Screen Unlocked")
+        }
+        showControls(autoHide: true)
+    }
+
     // Turns the player to landscape, or back to portrait, even with the
     // rotation lock on.
     private var fullscreenButton: some View {
@@ -198,7 +237,7 @@ struct PlayerView: View {
     }
 
     private func doubleTap(_ x: CGFloat) {
-        guard model.loaded else { return }
+        guard model.loaded, !locked else { return }
         if x < 0.35 { seekBy(-Double(settings.seekStep)) }
         else if x > 0.65 { seekBy(Double(settings.seekStep)) }
         else { model.togglePause() }
@@ -212,7 +251,7 @@ struct PlayerView: View {
     // Horizontal swipes seek; vertical swipes set volume (right) or
     // brightness (left).
     private func pan(_ state: UIGestureRecognizer.State, _ start: CGPoint, _ translation: CGPoint, _ size: CGSize) {
-        guard model.loaded, size.width > 0, size.height > 0 else { return }
+        guard model.loaded, !locked, size.width > 0, size.height > 0 else { return }
         switch state {
         case .changed where gestureMode == .none:
             guard hypot(translation.x, translation.y) > 12 else { return }
@@ -251,6 +290,7 @@ struct PlayerView: View {
     }
 
     private func pinch(_ scale: CGFloat) {
+        guard !locked else { return }
         if scale > 1.15 && !model.zoomToFill { model.zoomToFill = true; flash("Fill Screen") }
         else if scale < 0.87 && model.zoomToFill { model.zoomToFill = false; flash("Fit to Screen") }
     }
@@ -264,7 +304,7 @@ struct PlayerView: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
-        guard !model.paused else { return }
+        guard !model.paused || locked else { return }
         let task = DispatchWorkItem { controlsVisible = false }
         hideTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: task)

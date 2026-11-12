@@ -11,6 +11,8 @@ final class Orientation {
 
     // What the app allows right now. nil means everything but upside down.
     private(set) var forced: UIInterfaceOrientationMask?
+    // The player's screen lock holds the current orientation until unlocked.
+    private var held = false
     private var observer: NSObjectProtocol?
 
     var supported: UIInterfaceOrientationMask { forced ?? .allButUpsideDown }
@@ -38,8 +40,30 @@ final class Orientation {
     // With the lock off (held sideways, or lying flat) the current orientation
     // is kept and normal auto-rotation carries on from there.
     func leavePlayer() {
+        held = false
         forced = nil
         update(request: UIDevice.current.orientation == .portrait ? .portrait : nil)
+    }
+
+    // Keeps the interface the way it is now, ignoring how the phone is turned.
+    func hold() {
+        let current = UIApplication.shared.connectedScenes.lazy
+            .compactMap { $0 as? UIWindowScene }.first?.effectiveGeometry.interfaceOrientation ?? .portrait
+        let mask: UIInterfaceOrientationMask = switch current {
+        case .landscapeLeft: .landscapeLeft
+        case .landscapeRight: .landscapeRight
+        case .portraitUpsideDown: .portraitUpsideDown
+        default: .portrait
+        }
+        held = true
+        forced = mask
+        update(request: nil)
+    }
+
+    func unhold() {
+        guard held else { return }
+        held = false
+        release()
     }
 
     // Back to auto-rotation.
@@ -58,7 +82,7 @@ final class Orientation {
     // it should work as usual again. With the lock on the device keeps
     // reporting portrait, so a forced landscape stays until the button is used.
     private func releaseIfDeviceMatches() {
-        guard let forced else { return }
+        guard let forced, !held else { return }
         let device = UIDevice.current.orientation
         let matches = forced == .portrait ? device == .portrait : device.isLandscape
         if matches { release() }
