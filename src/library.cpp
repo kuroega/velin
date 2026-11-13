@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "velin/library.hpp"
 #include "velin/core.hpp"
+#include "number_parse.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -86,7 +87,7 @@ std::vector<std::string> split(std::string_view text,char separator) {
   return output;
 }
 template<class T> bool number(std::string_view text,T& value) {
-  const auto clean=trim(text); T parsed{}; const auto result=std::from_chars(clean.data(),clean.data()+clean.size(),parsed);
+  const auto clean=trim(text); T parsed{}; const auto result=detail::fromChars(clean.data(),clean.data()+clean.size(),parsed);
   if(result.ec!=std::errc{}||result.ptr!=clean.data()+clean.size())return false;
   if constexpr(std::is_floating_point_v<T>) if(!std::isfinite(parsed))return false;
   value=parsed;return true;

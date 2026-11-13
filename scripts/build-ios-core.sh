@@ -11,7 +11,7 @@ set -euo pipefail
 configuration="${1:-Release}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 output="$root/build/ios"
-deployment_target="26.0"  # Floating-point std::from_chars needs iOS 26.
+deployment_target="17.0"  # iPadOS 17 covers the A10X iPad Pro; see src/number_parse.hpp.
 
 build_platform() {
     local sdk="$1" directory="$output/$1"

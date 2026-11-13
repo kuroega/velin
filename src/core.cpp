@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "velin/core.hpp"
 #include "velin/library.hpp"
+#include "number_parse.hpp"
 
 #include <algorithm>
 #include <array>
@@ -151,7 +152,7 @@ bool samePath(std::string_view left, std::string_view right) {
 template <typename Number>
 bool parseNumber(std::string_view text, Number& value) {
   Number parsed{};
-  const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+  const auto result = detail::fromChars(text.data(), text.data() + text.size(), parsed);
   if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) return false;
   value = parsed;
   return true;
