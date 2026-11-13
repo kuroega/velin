@@ -105,4 +105,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         Orientation.shared.supported
     }
+
+    // iOS relaunches Velin when background downloads need attention.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == DownloadManager.sessionIdentifier else { completionHandler(); return }
+        DownloadManager.shared.backgroundCompletion = completionHandler
+    }
 }

@@ -43,6 +43,7 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
     let settings: AppSettings
     let library = VLNLibrary()
     let alist = VLNAList()
+    let downloads = DownloadManager.shared
     let videoView = VideoView(frame: .zero)
 
     private let player = VLNPlayer()
@@ -78,6 +79,12 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
             DispatchQueue.main.async { self?.applySettings() }
         }
         refreshRecents()
+        // A downloaded copy carries on from where the stream left off.
+        downloads.onFinished = { [weak self] file, source in
+            guard let self, let entry = self.library.entry(forKey: source) else { return }
+            self.library.recordKey(MediaSources.documentKey(file), title: file.lastPathComponent,
+                                   position: entry.position, duration: entry.duration, countPlay: false)
+        }
         nowPlaying.activate()
         // GPU work from the background loses the Vulkan device, so drop the
         // video while there; audio and Now Playing carry on. Resume only once
@@ -187,6 +194,37 @@ final class PlayerModel: NSObject, ObservableObject, VLNPlayerDelegate {
         }
         if let url = URL(string: key), url.scheme == "http" || url.scheme == "https" { openRemote(url); return true }
         return false
+    }
+
+    // MARK: Downloads
+
+    // The item playing now, when it streams from the network.
+    var currentRemoteItem: VLNMediaItem? {
+        guard let item = player.currentItem, item.url.scheme == "http" || item.url.scheme == "https" else { return nil }
+        return item
+    }
+
+    // One AList file with its subtitles; nil when it started, else why not.
+    func downloadAList(_ entry: VLNAListEntry, in folder: VLNAListFolder) -> String? {
+        var start = 0
+        guard let items = alist.playlist(for: folder, startingAt: entry.path, start: &start), start < items.count else {
+            return "\(entry.name) is no longer in the folder."
+        }
+        return downloads.download(items[start], expectedSize: entry.size)
+    }
+
+    // Every playable file in an AList folder.
+    func downloadAList(folder: VLNAListFolder) -> String? {
+        guard let first = folder.entries.first(where: { $0.isPlayable && !$0.isDirectory }) else { return "Nothing to download here." }
+        var start = 0
+        guard let items = alist.playlist(for: folder, startingAt: first.path, start: &start) else { return "Nothing to download here." }
+        var sizes: [String: Int64] = [:]
+        for entry in folder.entries where !entry.isDirectory { sizes[VLNAListLink(entry.path)] = entry.size }
+        return downloads.downloadAll(items, sizes: sizes)
+    }
+
+    func downloadRemote(_ url: URL) -> String? {
+        downloads.download(VLNMediaItem(url: url, title: url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent))
     }
 
     func closePlayer() {

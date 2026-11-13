@@ -116,6 +116,11 @@ struct PlayerView: View {
             Button { model.showStats.toggle() } label: {
                 Label(model.showStats ? "Hide Stats for Nerds" : "Stats for Nerds", systemImage: "chart.xyaxis.line")
             }
+            if let item = model.currentRemoteItem {
+                Button { showFeedback(model.downloads.download(item) ?? "Downloading to this iPhone") } label: {
+                    Label("Download to iPhone", systemImage: "arrow.down.circle")
+                }
+            }
         } label: {
             Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
         }

@@ -7,6 +7,7 @@ import VelinCore
 // folder (the last one browsed, unless a link asked for another).
 struct AListView: View {
     @EnvironmentObject private var model: PlayerModel
+    @EnvironmentObject private var downloads: DownloadManager
     let initialPath: String?
     @State private var signedIn = false
     @State private var path = "/"
@@ -59,8 +60,28 @@ struct AListView: View {
                 let visible = folder.entries.filter { $0.isDirectory || $0.isPlayable }
                 if visible.isEmpty && !loading { Text("Nothing playable here").foregroundStyle(.secondary) }
                 ForEach(visible, id: \.path) { entry in
-                    Button { open(entry, in: folder) } label: { AListRow(entry: entry, history: model.library.entry(forKey: VLNAListLink(entry.path))) }
-                        .buttonStyle(.plain)
+                    let key = VLNAListLink(entry.path)
+                    Button { open(entry, in: folder) } label: {
+                        AListRow(entry: entry, history: model.library.entry(forKey: key),
+                                 download: entry.isDirectory ? nil : downloadState(key))
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions(edge: .leading) {
+                        if !entry.isDirectory && downloadState(key) == nil {
+                            Button { problem = model.downloadAList(entry, in: folder) } label: { Label("Download", systemImage: "arrow.down.circle") }
+                                .tint(.accentColor)
+                        }
+                    }
+                    .contextMenu {
+                        if !entry.isDirectory {
+                            Button("Play", systemImage: "play") { open(entry, in: folder) }
+                            if let file = downloads.downloadedFile(for: key) {
+                                Button("Play Downloaded Copy", systemImage: "iphone") { model.openDocument(file) }
+                            } else if downloads.job(for: key) == nil {
+                                Button("Download", systemImage: "arrow.down.circle") { problem = model.downloadAList(entry, in: folder) }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -71,10 +92,20 @@ struct AListView: View {
                 Menu {
                     Text("\(model.alist.username) · \(model.alist.server)")
                     Button("Refresh", systemImage: "arrow.clockwise") { load(path, refresh: true) }
+                    if let folder, folder.entries.contains(where: { $0.isPlayable && !$0.isDirectory }) {
+                        Button("Download All in Folder", systemImage: "arrow.down.circle") { problem = model.downloadAList(folder: folder) }
+                    }
                     Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { showingSignOut = true }
                 } label: { Image(systemName: loading ? "ellipsis" : "person.crop.circle") }
             }
         }
+    }
+
+    private func downloadState(_ key: String) -> AListRow.Download? {
+        if downloads.downloadedFile(for: key) != nil { return .done }
+        guard let job = downloads.job(for: key) else { return nil }
+        if case .failed = job.state { return .failed }
+        return .running(job.fraction ?? 0)
     }
 
     private func open(_ entry: VLNAListEntry, in folder: VLNAListFolder) {
@@ -127,6 +158,9 @@ struct AListView: View {
 private struct AListRow: View {
     let entry: VLNAListEntry
     let history: VLNHistoryEntry?
+    var download: Download? = nil
+
+    enum Download: Equatable { case running(Double), done, failed }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -143,6 +177,14 @@ private struct AListRow: View {
                 }
             }
             Spacer()
+            switch download {
+            case .running(let fraction):
+                ProgressView(value: fraction).progressViewStyle(.circular).controlSize(.small)
+                    .overlay { Image(systemName: "arrow.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.tint) }
+            case .done: Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green)
+            case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+            case nil: EmptyView()
+            }
             if entry.isDirectory { Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
         }
     }

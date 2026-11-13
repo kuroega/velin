@@ -41,6 +41,7 @@ struct VelinPlayerApp: App {
             }
             .environmentObject(model)
             .environmentObject(settings)
+            .environmentObject(model.downloads)
             .preferredColorScheme(.dark)
             .tint(Color(red: 0.42, green: 0.45, blue: 1.0))
             .onOpenURL { url in
