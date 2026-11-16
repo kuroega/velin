@@ -358,7 +358,11 @@ private struct SeekBar<Trailing: View>: View {
     var body: some View {
         let position = scrubbing ?? clock.position
         VStack(spacing: 4) {
-            Slider(value: Binding(get: { position }, set: { scrubbing = $0; onScrub() }), in: 0...max(duration, 1)) { editing in
+            // The getter must read the live value, not `position` captured
+            // above. When the slider reads back an older value than it just
+            // set, it never reports the end of the drag: the seek is never
+            // made and the bar stays on the target.
+            Slider(value: Binding(get: { scrubbing ?? clock.position }, set: { scrubbing = $0; onScrub() }), in: 0...max(duration, 1)) { editing in
                 if !editing, let target = scrubbing { onCommit(target); scrubbing = nil }
             }
             .tint(.white)
